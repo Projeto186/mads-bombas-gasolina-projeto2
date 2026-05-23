@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block conteudo %}
+<h1>Acesso privado</h1>
+<p>Insere uma chave para aceder à página privada correspondente.</p>
+
+<section class="card pequeno">
+    {% if erro %}
+    <p class="erro">{{ erro }}</p>
+    {% endif %}
+
+    <form method="post">
+        <label>Chave privada</label>
+        <input type="password" name="chave" placeholder="Escreve a chave" required>
+        <button type="submit">Entrar</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Chaves de teste</h2>
+    <ul>
+        <li><b>compras123</b> → compras privadas com NIF</li>
+        <li><b>avancado123</b> → gráficos e tabelas avançadas</li>
+        <li><b>localizacoes123</b> → localizações completas e mapa com legenda</li>
+    </ul>
+</section>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block conteudo %}
+<h1>Bombas de Gasolina</h1>
+<p>Desenvolvido por Pedro Silva, Afonso Jerónimo e Cristiano Teixeira no âmbito da disciplina de MADS.</p></br>
+<p>Página pública com mapa das bombas, gráfico da variação dos preços e 300 compras sem NIF.</p>
+
+<section class="card">
+    <h2>Mapa público das bombas</h2>
+    <div id="mapa" class="mapa"></div>
+</section>
+
+<section class="card">
+    <h2>Variação do preço dos combustíveis</h2>
+    <canvas id="graficoPrecos"></canvas>
+</section>
+
+<section class="card">
+    <h2>Compras públicas</h2>
+    <p>Os NIFs e a forma de pagamento não aparecem nesta tabela pública.</p>
+    <div class="tabela-scroll">
+        <table>
+            <thead>
+                <tr>
+                    {% for coluna in compras[0].keys() %}
+                    <th>{{ coluna }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for compra in compras %}
+                <tr>
+                    {% for valor in compra.values() %}
+                    <td>{{ valor }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<script>
+const pontos = {{ mapa_json|safe }};
+const mapa = L.map('mapa').setView([41.23, -8.62], 11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap'
+}).addTo(mapa);
+
+pontos.forEach(p => {
+    const marcador = L.circleMarker([p.lat, p.lng], {
+        radius: 8,
+        color: p.cor,
+        fillColor: p.cor,
+        fillOpacity: 0.85
+    }).addTo(mapa);
+
+    marcador.bindPopup(`
+        <b>${p.nome}</b><br>
+        Marca: ${p.marca}<br>
+        Concelho: ${p.concelho}<br>
+        Preço mais recente: ${p.preco} € / L<br>
+        Combustível: ${p.combustivel}<br>
+        Data: ${p.data_preco}
+    `);
+});
+
+const dadosPrecos = {{ grafico_precos_json|safe }};
+new Chart(document.getElementById('graficoPrecos'), {
+    type: 'line',
+    data: dadosPrecos,
+    options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: { y: { title: { display: true, text: 'Preço por litro (€)' } } }
+    }
+});
+</script>
+{% endblock %}

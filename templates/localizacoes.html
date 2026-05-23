@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+
+{% block conteudo %}
+<h1>Localizações das bombas</h1>
+<p>Esta página só abre com a chave <b>localizacoes123</b>. Usa a folha de localizações do Excel completo.</p>
+
+<section class="card">
+    <h2>Mapa completo com legenda</h2>
+    <div class="legenda">
+        {% for marca, cor in marcas.items() %}
+        <span><i style="background: {{ cor }}"></i>{{ marca }}</span>
+        {% endfor %}
+    </div>
+    <div id="mapa" class="mapa grande"></div>
+</section>
+
+<section class="card">
+    <h2>Lista de bombas registadas</h2>
+    <div class="tabela-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th><th>Marca</th><th>Nome do posto</th><th>Concelho</th><th>Latitude</th><th>Longitude</th><th>Preço mais recente</th><th>Combustível</th><th>Data</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for loc in localizacoes %}
+                <tr>
+                    <td>{{ loc.id }}</td>
+                    <td>{{ loc.marca }}</td>
+                    <td>{{ loc.nome }}</td>
+                    <td>{{ loc.concelho }}</td>
+                    <td>{{ loc.lat }}</td>
+                    <td>{{ loc.lng }}</td>
+                    <td>{{ loc.preco }}</td>
+                    <td>{{ loc.combustivel }}</td>
+                    <td>{{ loc.data_preco }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<script>
+const pontos = {{ mapa_json|safe }};
+const mapa = L.map('mapa').setView([41.23, -8.62], 11);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap'
+}).addTo(mapa);
+
+pontos.forEach(p => {
+    const marcador = L.circleMarker([p.lat, p.lng], {
+        radius: 9,
+        color: p.cor,
+        fillColor: p.cor,
+        fillOpacity: 0.9
+    }).addTo(mapa);
+
+    marcador.bindPopup(`
+        <b>${p.nome}</b><br>
+        Marca: ${p.marca}<br>
+        Concelho: ${p.concelho}<br>
+        Preço mais recente: ${p.preco} € / L<br>
+        Combustível: ${p.combustivel}<br>
+        Data: ${p.data_preco}
+    `);
+});
+</script>
+{% endblock %}

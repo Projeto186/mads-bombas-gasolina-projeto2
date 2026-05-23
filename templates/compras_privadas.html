@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+
+{% block conteudo %}
+<h1>Compras privadas</h1>
+<p>Esta página só abre com a chave <b>compras123</b>. Aqui aparecem as 300 compras com NIF.</p>
+
+<section class="card">
+    <div class="tabela-scroll">
+        <table>
+            <thead>
+                <tr>
+                    {% for coluna in compras[0].keys() %}
+                    <th>{{ coluna }}</th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for compra in compras %}
+                <tr>
+                    {% for valor in compra.values() %}
+                    <td>{{ valor }}</td>
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

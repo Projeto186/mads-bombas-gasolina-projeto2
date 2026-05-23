@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block conteudo %}
+<h1>Dashboard avançado</h1>
+<p>Esta página só abre com a chave <b>avancado123</b>.</p>
+
+<section class="grid">
+    <div class="card">
+        <h2>Total vendido por marca</h2>
+        <canvas id="graficoMarcas"></canvas>
+    </div>
+    <div class="card">
+        <h2>Litros por combustível</h2>
+        <canvas id="graficoCombustiveis"></canvas>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Variação média do preço por combustível</h2>
+    <canvas id="graficoPrecos"></canvas>
+</section>
+
+<section class="grid">
+    <div class="card">
+        <h2>Tabela por marca</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Marca</th><th>Compras</th><th>Litros</th><th>Total (€)</th><th>Média €/L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for linha in tabela_marca %}
+                <tr>
+                    <td>{{ linha.marca }}</td>
+                    <td>{{ linha.compras }}</td>
+                    <td>{{ linha.litros }}</td>
+                    <td>{{ linha.total }}</td>
+                    <td>{{ linha.media }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Tabela por combustível</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Combustível</th><th>Compras</th><th>Litros</th><th>Total (€)</th><th>Média €/L</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for linha in tabela_combustivel %}
+                <tr>
+                    <td>{{ linha.combustivel }}</td>
+                    <td>{{ linha.compras }}</td>
+                    <td>{{ linha.litros }}</td>
+                    <td>{{ linha.total }}</td>
+                    <td>{{ linha.media }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<script>
+const graficoMarcas = {{ grafico_marcas_json|safe }};
+new Chart(document.getElementById('graficoMarcas'), {
+    type: 'bar',
+    data: {
+        labels: graficoMarcas.labels,
+        datasets: [{ label: 'Total vendido (€)', data: graficoMarcas.data }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } } }
+});
+
+const graficoCombustiveis = {{ grafico_combustiveis_json|safe }};
+new Chart(document.getElementById('graficoCombustiveis'), {
+    type: 'pie',
+    data: {
+        labels: graficoCombustiveis.labels,
+        datasets: [{ label: 'Litros', data: graficoCombustiveis.data }]
+    },
+    options: { responsive: true }
+});
+
+const dadosPrecos = {{ grafico_precos_json|safe }};
+new Chart(document.getElementById('graficoPrecos'), {
+    type: 'line',
+    data: dadosPrecos,
+    options: {
+        responsive: true,
+        plugins: { legend: { position: 'bottom' } },
+        scales: { y: { title: { display: true, text: 'Preço por litro (€)' } } }
+    }
+});
+</script>
+{% endblock %}
