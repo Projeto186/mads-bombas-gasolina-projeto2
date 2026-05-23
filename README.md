@@ -46,3 +46,4 @@ Para facilitar a execução sem instalar bibliotecas extra, as folhas do Excel f
 - `localizacoes.csv`
 
 A aplicação Flask lê estes dois ficheiros CSV.
+"# mads-bombas-gasolina-projeto2" 
