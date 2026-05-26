@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block conteudo %}
+<h1>Verificação da integridade dos dados</h1>
+<p>Esta página só abre com a chave <b>integridade123</b>.</p>
+
+<section class="card">
+    <h2>Resultado da verificação</h2>
+
+    {% if total_erros == 0 %}
+        <p class="sucesso">Está tudo certo. Os dados foram verificados e não foram encontrados problemas.</p>
+    {% else %}
+        <p class="erro">Foram encontrados {{ total_erros }} problema(s) nos dados.</p>
+        <p>Consulta a tabela abaixo para veres o que está errado e o motivo.</p>
+    {% endif %}
+
+    <p><span class="badge">Compras analisadas: {{ total_compras }}</span></p>
+    <p><span class="badge">Localizações analisadas: {{ total_localizacoes }}</span></p>
+</section>
+
+{% if erros %}
+<section class="card">
+    <h2>Lista de problemas encontrados</h2>
+    <div class="tabela-scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>N.º</th>
+                    <th>Tipo</th>
+                    <th>Linha / Registo</th>
+                    <th>Problema encontrado</th>
+                    <th>Porque está errado</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for erro in erros %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td>{{ erro.tipo }}</td>
+                    <td>{{ erro.linha }}</td>
+                    <td>{{ erro.problema }}</td>
+                    <td>{{ erro.motivo }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endif %}
+{% endblock %}

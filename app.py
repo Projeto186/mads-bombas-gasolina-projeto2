@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, session
 import csv
 import json
+import re
 from collections import defaultdict
 from datetime import datetime
 
@@ -11,7 +12,8 @@ app.secret_key = "trocar_esta_chave_secreta"
 CHAVES_PRIVADAS = {
     "compras123": "compras",
     "avancado123": "avancado",
-    "localizacoes123": "localizacoes"
+    "localizacoes123": "localizacoes",
+    "integridade123": "integridade"
 }
 
 COMPRAS_CSV = "compras.csv"
@@ -176,6 +178,150 @@ def verificar_acesso(tipo_necessario):
     return session.get("tipo_acesso") == tipo_necessario
 
 
+def texto(valor):
+    return str(valor or "").strip()
+
+
+def obter_coluna(linha, nomes):
+    for nome in nomes:
+        if nome in linha:
+            return texto(linha.get(nome))
+    return ""
+
+
+def data_valida_e_nao_futura(valor):
+    valor = texto(valor)
+    if not valor:
+        return False, "A data está vazia."
+
+    formatos = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
+    for formato in formatos:
+        try:
+            data = datetime.strptime(valor[:10], formato).date()
+            if data > datetime.now().date():
+                return False, "A data está no futuro."
+            return True, ""
+        except ValueError:
+            continue
+
+    return False, "A data não está num formato reconhecido."
+
+
+def nif_bem_estruturado(nif):
+    # Para este projeto valida-se a estrutura: exatamente 9 dígitos.
+    return bool(re.fullmatch(r"\d{9}", texto(nif)))
+
+
+def adicionar_erro(erros, tipo, linha, problema, motivo):
+    erros.append({
+        "tipo": tipo,
+        "linha": linha,
+        "problema": problema,
+        "motivo": motivo
+    })
+
+
+def verificar_integridade_dados():
+    erros = []
+    compras = ler_compras()
+    localizacoes = ler_localizacoes()
+
+    marcas_validas = {texto(loc.get("Marca")).lower() for loc in localizacoes if texto(loc.get("Marca"))}
+    nomes_postos_validos = {texto(loc.get("Nome_Posto")).lower() for loc in localizacoes if texto(loc.get("Nome_Posto"))}
+    ids_compras = set()
+    ids_localizacoes = set()
+
+    for indice, compra in enumerate(compras, start=2):
+        id_compra = obter_coluna(compra, ["CompraID", "ID_Compra", "ID", "Id"])
+        marca = obter_coluna(compra, ["Marca"])
+        nome_posto = obter_coluna(compra, ["Nome_Posto", "Nome_Bomba", "Bomba", "Posto"])
+        nif = obter_coluna(compra, ["NIF", "NIF_Cliente", "Nif"])
+        data = obter_coluna(compra, ["Data", "Data_Compra", "Data Compra"])
+        preco = obter_coluna(compra, ["Preço_Litro", "Preco_Litro", "Preco", "Preço"])
+        litros = obter_coluna(compra, ["Quantidade_Litros", "Litros", "Quantidade"])
+        total = obter_coluna(compra, ["Valor_Total", "Total"])
+
+        if not id_compra:
+            adicionar_erro(erros, "Compra", indice, "Compra sem ID", "Cada compra deve ter um identificador.")
+        elif id_compra in ids_compras:
+            adicionar_erro(erros, "Compra", indice, f"ID de compra duplicado: {id_compra}", "O mesmo ID não deve aparecer em mais do que uma compra.")
+        else:
+            ids_compras.add(id_compra)
+
+        if not marca:
+            adicionar_erro(erros, "Compra", indice, "Marca vazia", "A compra tem de indicar a marca da bomba.")
+        elif marcas_validas and marca.lower() not in marcas_validas:
+            adicionar_erro(erros, "Compra", indice, f"Marca/bomba não registada: {marca}", "A marca da compra não existe no ficheiro de localizações, por isso pode ter sido inventada ou escrita de forma diferente.")
+
+        if nome_posto and nomes_postos_validos and nome_posto.lower() not in nomes_postos_validos:
+            adicionar_erro(erros, "Compra", indice, f"Nome de bomba não registado: {nome_posto}", "O nome da bomba não existe na lista de localizações registadas.")
+
+        if not nif:
+            adicionar_erro(erros, "Compra", indice, "NIF vazio", "O NIF deve existir nas compras privadas.")
+        elif not nif_bem_estruturado(nif):
+            adicionar_erro(erros, "Compra", indice, f"NIF mal estruturado: {nif}", "O NIF deve ter exatamente 9 dígitos numéricos.")
+
+        data_ok, motivo_data = data_valida_e_nao_futura(data)
+        if not data_ok:
+            adicionar_erro(erros, "Compra", indice, f"Data inválida: {data}", motivo_data)
+
+        preco_num = numero(preco, None)
+        litros_num = numero(litros, None)
+        total_num = numero(total, None)
+
+        if preco_num is None or preco_num <= 0:
+            adicionar_erro(erros, "Compra", indice, f"Preço por litro inválido: {preco}", "O preço por litro deve ser um número maior do que zero.")
+
+        if litros_num is None or litros_num <= 0:
+            adicionar_erro(erros, "Compra", indice, f"Quantidade de litros inválida: {litros}", "A quantidade de litros deve ser um número maior do que zero.")
+
+        if total_num is None or total_num <= 0:
+            adicionar_erro(erros, "Compra", indice, f"Valor total inválido: {total}", "O valor total deve ser um número maior do que zero.")
+
+        if preco_num and litros_num and total_num:
+            total_esperado = round(preco_num * litros_num, 2)
+            if abs(total_esperado - total_num) > 0.05:
+                adicionar_erro(
+                    erros,
+                    "Compra",
+                    indice,
+                    f"Valor total incoerente: {total}",
+                    f"O total deveria ser aproximadamente {total_esperado}, porque preço x litros = total."
+                )
+
+    for indice, loc in enumerate(localizacoes, start=2):
+        id_loc = obter_coluna(loc, ["LocalizacaoID", "ID", "Id"])
+        marca = obter_coluna(loc, ["Marca"])
+        nome = obter_coluna(loc, ["Nome_Posto", "Nome", "Posto"])
+        lat = obter_coluna(loc, ["Latitude", "Lat"])
+        lng = obter_coluna(loc, ["Longitude", "Lng", "Lon"])
+        cor = obter_coluna(loc, ["Cor_Mapa", "Cor"])
+
+        if not id_loc:
+            adicionar_erro(erros, "Localização", indice, "Localização sem ID", "Cada localização deve ter um identificador.")
+        elif id_loc in ids_localizacoes:
+            adicionar_erro(erros, "Localização", indice, f"ID de localização duplicado: {id_loc}", "O mesmo ID não deve aparecer em mais do que uma localização.")
+        else:
+            ids_localizacoes.add(id_loc)
+
+        if not marca:
+            adicionar_erro(erros, "Localização", indice, "Marca vazia", "Cada localização deve indicar a marca da bomba.")
+        if not nome:
+            adicionar_erro(erros, "Localização", indice, "Nome do posto vazio", "Cada localização deve indicar o nome da bomba/posto.")
+
+        lat_num = numero(lat, None)
+        lng_num = numero(lng, None)
+        if lat_num is None or not (36 <= lat_num <= 43):
+            adicionar_erro(erros, "Localização", indice, f"Latitude inválida: {lat}", "A latitude deve ser numérica e estar dentro de uma zona plausível para Portugal continental.")
+        if lng_num is None or not (-10 <= lng_num <= -6):
+            adicionar_erro(erros, "Localização", indice, f"Longitude inválida: {lng}", "A longitude deve ser numérica e estar dentro de uma zona plausível para Portugal continental.")
+
+        if cor and not re.fullmatch(r"#[0-9A-Fa-f]{6}", cor):
+            adicionar_erro(erros, "Localização", indice, f"Cor inválida: {cor}", "A cor do mapa deve estar no formato hexadecimal, por exemplo #FF0000.")
+
+    return erros, len(compras), len(localizacoes)
+
+
 @app.route("/")
 def home():
     compras = ler_compras()[:300]
@@ -208,6 +354,8 @@ def acesso():
                 return redirect(url_for("avancado"))
             if tipo_acesso == "localizacoes":
                 return redirect(url_for("localizacoes_privadas"))
+            if tipo_acesso == "integridade":
+                return redirect(url_for("integridade"))
 
         erro = "Chave inválida."
 
@@ -260,6 +408,22 @@ def localizacoes_privadas():
         localizacoes=mapa,
         mapa_json=json.dumps(mapa, ensure_ascii=False),
         marcas=marcas
+    )
+
+
+@app.route("/privado/integridade")
+def integridade():
+    if not verificar_acesso("integridade"):
+        return redirect(url_for("acesso"))
+
+    erros, total_compras, total_localizacoes = verificar_integridade_dados()
+
+    return render_template(
+        "integridade.html",
+        erros=erros,
+        total_erros=len(erros),
+        total_compras=total_compras,
+        total_localizacoes=total_localizacoes
     )
 
 

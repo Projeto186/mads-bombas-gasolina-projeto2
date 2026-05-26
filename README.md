@@ -25,12 +25,14 @@ http://127.0.0.1:5000
 - `/privado/compras` - compras com NIF.
 - `/privado/avancado` - gráficos e tabelas avançadas.
 - `/privado/localizacoes` - lista completa de localizações e mapa com legenda.
+- `/privado/integridade` - verificação da integridade dos dados.
 
 ## Chaves privadas
 
 - `compras123` - permite entrar em `/privado/compras`.
 - `avancado123` - permite entrar em `/privado/avancado`.
 - `localizacoes123` - permite entrar em `/privado/localizacoes`.
+- `integridade123` - permite entrar em `/privado/integridade`.
 
 Cada chave só dá acesso à sua própria página privada.
 
