@@ -1,6 +1,4 @@
-# APP_PY_FORCAR_EXCEL_NOVO_A_CADA_PEDIDO_20260618
 from flask import Flask, render_template, request, redirect, url_for, session, g, has_request_context
-import base64
 import html
 from io import BytesIO
 import json
@@ -10,7 +8,8 @@ import time
 import hashlib
 from collections import defaultdict
 from datetime import datetime
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urlparse, quote
+
 import pandas as pd
 import requests
 
@@ -22,14 +21,21 @@ CHAVES_PRIVADAS = {
     "compras123": "compras",
     "avancado123": "avancado",
     "localizacoes123": "localizacoes",
-    "integridade123": "integridade"
+    "integridade123": "integridade",
 }
 
-# LINK_PUBLICO_FIXO_NO_CODIGO_20260617
-# A aplicação usa APENAS este link público SharePoint/OneDrive.
-# Não usa Excel local, não usa CSV local e não precisa de variável no Render.
-SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2"
-# Sem cache global: cada request/refresh volta a pedir o Excel ao SharePoint.
+# Fonte de dados: Google Sheets
+# Podes substituir por variável de ambiente no Render, mas este link já fica definido por defeito.
+GOOGLE_SHEET_URL = os.environ.get(
+    "GOOGLE_SHEET_URL",
+    os.environ.get(
+        "GOOGLE_SHEET_ID",
+        "https://docs.google.com/spreadsheets/d/189SiAMZfhSN-VXUazREAoStx-sEMSdVBso3s3wWccj0/edit?usp=sharing",
+    ),
+)
+
+GOOGLE_COMPRAS_SHEET = os.environ.get("GOOGLE_COMPRAS_SHEET", "Compras")
+GOOGLE_LOCALIZACOES_SHEET = os.environ.get("GOOGLE_LOCALIZACOES_SHEET", "Localizações")
 
 HTTP_HEADERS = {
     "User-Agent": (
@@ -37,10 +43,7 @@ HTTP_HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0 Safari/537.36"
     ),
-    "Accept": (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
-        "application/octet-stream,text/html,*/*"
-    ),
+    "Accept": "text/csv,text/plain,*/*",
     "Cache-Control": "no-cache, no-store, must-revalidate",
     "Pragma": "no-cache",
 }
@@ -57,7 +60,6 @@ def impedir_cache_browser(response):
 
 @app.errorhandler(Exception)
 def mostrar_erro_visivel(erro):
-    # Em vez de página preta ou erro genérico, mostra claramente o que falhou.
     mensagem = str(erro)
     return f"""
     <!doctype html>
@@ -75,10 +77,10 @@ def mostrar_erro_visivel(erro):
     </head>
     <body>
         <div class="box">
-            <h1>Erro ao carregar o Excel</h1>
-            <p>A aplicação está online, mas não conseguiu obter/ler o ficheiro Excel do SharePoint.</p>
+            <h1>Erro ao carregar dados do Google Sheets</h1>
+            <p>A aplicação está online, mas não conseguiu obter ou ler os dados do Google Sheets.</p>
             <pre>{html.escape(mensagem)}</pre>
-            <p>Confirma que o Excel está guardado no SharePoint e que o link permite download público.</p>
+            <p>Confirma que o Google Sheets está partilhado como "Anyone with the link can view" e que as abas se chamam Compras e Localizações.</p>
             <p><a href="/">Tentar novamente</a></p>
         </div>
     </body>
@@ -86,194 +88,29 @@ def mostrar_erro_visivel(erro):
     """, 500
 
 
-@app.route("/debug-sharepoint")
-def debug_sharepoint():
-    # Teste simples: se mudares o Excel e fizeres refresh aqui, o HASH tem de mudar.
-    try:
-        conteudo, info = descarregar_excel_por_link_publico(com_info=True)
-        primeiros_bytes = conteudo[:4].hex(" ").upper()
-        sha = hashlib.sha256(conteudo).hexdigest()
+def extrair_google_sheet_id(valor):
+    """Aceita link completo ou apenas o ID do Google Sheets."""
+    valor = str(valor or "").strip()
+    if not valor:
+        raise RuntimeError("GOOGLE_SHEET_URL/GOOGLE_SHEET_ID está vazio.")
 
-        try:
-            compras_preview = pd.read_excel(BytesIO(conteudo), sheet_name="Compras", engine="openpyxl")
-            localizacoes_preview = pd.read_excel(BytesIO(conteudo), sheet_name="Localizações", engine="openpyxl")
-            linhas = f"Compras: {len(compras_preview)} linhas. Localizações: {len(localizacoes_preview)} linhas."
-        except Exception as exc:
-            linhas = f"Excel recebido, mas erro ao ler folhas: {type(exc).__name__}: {exc}"
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", valor)
+    if match:
+        return match.group(1)
 
-        return (
-            "OK - Excel descarregado AGORA pelo servidor.<br>"
-            f"Hora do servidor: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>"
-            f"Primeiros bytes: {primeiros_bytes}<br>"
-            f"Tamanho: {len(conteudo)} bytes<br>"
-            f"SHA256: {sha}<br>"
-            f"Origem: {html.escape(info.get('origem', ''))}<br>"
-            f"Última modificação indicada: {html.escape(info.get('last_modified', 'sem info'))}<br>"
-            f"{html.escape(linhas)}"
-        )
-    except Exception as erro:
-        return f"ERRO SHAREPOINT: {html.escape(str(erro))}", 500
+    # Se não for link, assume que já é o ID.
+    if re.fullmatch(r"[a-zA-Z0-9-_]+", valor):
+        return valor
+
+    raise RuntimeError("Não foi possível extrair o ID do Google Sheets do valor configurado.")
 
 
-def limpar_valor_excel(valor):
-    """Converte valores vindos do Excel para formatos simples usados pelos templates."""
-    if pd.isna(valor):
-        return ""
-    if isinstance(valor, pd.Timestamp):
-        return valor.strftime("%Y-%m-%d")
-    return valor
-
-
-def acrescentar_parametro_download(url):
-    """Adiciona download=1 ao link sem estragar os outros parâmetros."""
-    parsed = urlparse(url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query["download"] = "1"
-    query.pop("web", None)
-    return urlunparse(parsed._replace(query=urlencode(query)))
-
-
-def acrescentar_cache_buster(url):
-    """Evita que o SharePoint/OneDrive devolva uma versão antiga do ficheiro."""
-    parsed = urlparse(url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query["_cb"] = str(int(time.time() * 1000))
-    return urlunparse(parsed._replace(query=urlencode(query)))
-
-
-def criar_share_id(share_url):
-    """Cria o shareId usado por endpoints públicos OneDrive/SharePoint."""
-    encoded = base64.urlsafe_b64encode(share_url.encode("utf-8")).decode("utf-8")
-    encoded = encoded.rstrip("=")
-    return "u!" + encoded
-
-
-def url_download_aspx_sharepoint(url):
-    """Cria o endpoint oficial de download.aspx a partir do link público SharePoint."""
-    parsed = urlparse(url)
-    partes = [p for p in parsed.path.split("/") if p]
-
-    # Link típico:
-    # /:x:/g/personal/a044946_ipmaia_pt/IQDT...
-    if "personal" not in partes:
-        return None
-
-    idx = partes.index("personal")
-    if len(partes) <= idx + 2:
-        return None
-
-    personal_id = partes[idx + 1]
-    share_token = partes[idx + 2]
-
-    # Endpoint de download direto do SharePoint.
-    base = f"{parsed.scheme}://{parsed.netloc}/personal/{personal_id}/_layouts/15/download.aspx"
-    return acrescentar_cache_buster(base + "?share=" + share_token + "&download=1")
-
-
-def obter_download_url_via_api_onedrive(url):
-    """
-    Pede SEMPRE um downloadUrl temporário novo à API pública OneDrive/SharePoint.
-    Isto ajuda a evitar que o servidor fique agarrado ao primeiro ficheiro descarregado.
-    """
-    share_id = criar_share_id(url)
-    metadata_url = f"https://api.onedrive.com/v1.0/shares/{share_id}/root"
-    metadata_url = acrescentar_cache_buster(metadata_url)
-
-    resposta = pedir_url(metadata_url)
-    if not resposta.ok:
-        raise RuntimeError(
-            f"API pública OneDrive falhou: status {resposta.status_code}, início: "
-            f"{resposta.text[:200]}"
-        )
-
-    try:
-        dados = resposta.json()
-    except Exception as exc:
-        raise RuntimeError(f"A API pública OneDrive não devolveu JSON válido: {exc}")
-
-    download_url = (
-        dados.get("@content.downloadUrl")
-        or dados.get("@microsoft.graph.downloadUrl")
-        or dados.get("downloadUrl")
-    )
-
-    if not download_url:
-        raise RuntimeError(
-            "A API pública OneDrive não devolveu downloadUrl. "
-            f"Resposta parcial: {str(dados)[:300]}"
-        )
-
-    info = {
-        "origem": "api.onedrive.com/root -> downloadUrl temporário novo",
-        "last_modified": dados.get("lastModifiedDateTime", ""),
-        "name": dados.get("name", ""),
-        "size": str(dados.get("size", "")),
-    }
-    return acrescentar_cache_buster(download_url), info
-
-
-def candidatos_para_download(url):
-    """Gera tentativas de download direto, sempre com cache-buster."""
-    urls = []
-
-    def add(u):
-        if u and u not in urls:
-            urls.append(u)
-
-    # 1) Endpoint SharePoint download.aspx, costuma ser o melhor para link público.
-    add(url_download_aspx_sharepoint(url))
-
-    # 2) Link público em modo download e com cache-buster.
-    add(acrescentar_cache_buster(acrescentar_parametro_download(url)))
-    add(acrescentar_cache_buster(url))
-
-    # 3) Endpoint público OneDrive/SharePoint por shareId.
-    share_id = criar_share_id(url)
-    add(acrescentar_cache_buster(f"https://api.onedrive.com/v1.0/shares/{share_id}/root/content"))
-
-    return urls
-
-
-def parece_excel(conteudo):
-    # Ficheiros .xlsx são ZIP e começam por PK.
-    return bool(conteudo and conteudo[:2] == b"PK")
-
-
-def extrair_urls_download_de_html(conteudo):
-    """Tenta encontrar um URL real de download dentro da página HTML/preview do SharePoint."""
-    texto_html = conteudo.decode("utf-8", errors="ignore")
-    texto_html = html.unescape(texto_html)
-    texto_html = texto_html.replace("\\u0026", "&")
-    texto_html = texto_html.replace("\\/", "/")
-
-    encontrados = []
-    padroes = [
-        r'"downloadUrl"\s*:\s*"([^"]+)"',
-        r'"@content\.downloadUrl"\s*:\s*"([^"]+)"',
-        r'(https://[^"\s<>]+download\.aspx[^"\s<>]+)',
-        r'(https://[^"\s<>]+/download[^"\s<>]+)',
-    ]
-
-    for padrao in padroes:
-        for match in re.findall(padrao, texto_html, flags=re.IGNORECASE):
-            url = match.encode("utf-8").decode("unicode_escape", errors="ignore")
-            url = html.unescape(url).replace("\\u0026", "&").replace("\\/", "/")
-            if url.startswith("https://") and url not in encontrados:
-                encontrados.append(url)
-
-    return encontrados
-
-
-def validar_conteudo_excel(conteudo, origem=""):
-    if parece_excel(conteudo):
-        return
-
-    inicio = conteudo[:300].decode("utf-8", errors="ignore") if conteudo else ""
-    raise RuntimeError(
-        "O link não devolveu um ficheiro Excel (.xlsx) válido. "
-        "Confirma que o link abre em janela anónima e que permite download. "
-        f"Origem tentada: {origem}. "
-        f"Início da resposta recebida: {inicio}"
+def construir_url_csv(nome_aba):
+    sheet_id = extrair_google_sheet_id(GOOGLE_SHEET_URL)
+    cache_buster = str(int(time.time() * 1000))
+    return (
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq"
+        f"?tqx=out:csv&sheet={quote(nome_aba)}&_cb={cache_buster}"
     )
 
 
@@ -285,117 +122,81 @@ def pedir_url(url):
     headers["Pragma"] = "no-cache"
     headers["Expires"] = "0"
     headers["If-Modified-Since"] = "Thu, 01 Jan 1970 00:00:00 GMT"
-    # Não enviamos cookies/sessão nenhuma. Cada chamada é limpa.
-    return requests.get(
-        url,
-        headers=headers,
-        allow_redirects=True,
-        timeout=15,
-    )
+    return requests.get(url, headers=headers, allow_redirects=True, timeout=15)
 
 
-def descarregar_excel_por_link_publico(com_info=False):
-    erros = []
+def descarregar_csv_google_sheets(nome_aba, com_info=False):
+    url = construir_url_csv(nome_aba)
+    resposta = pedir_url(url)
+    content_type = resposta.headers.get("Content-Type", "")
 
-    # 1) Primeiro tenta o endpoint download.aspx do SharePoint.
-    # Este é normalmente o que melhor reflete alterações recentes no ficheiro partilhado.
-    for url in candidatos_para_download(SHAREPOINT_EXCEL_URL):
-        try:
-            resposta = pedir_url(url)
-        except Exception as exc:
-            erros.append(f"{url} -> {type(exc).__name__}: {exc}")
-            continue
-
-        content_type = resposta.headers.get("Content-Type", "")
-        final_url = resposta.url
-
-        if resposta.ok and parece_excel(resposta.content):
-            info = {
-                "origem": url,
-                "last_modified": resposta.headers.get("Last-Modified", "sem info"),
-            }
-            return (resposta.content, info) if com_info else resposta.content
-
-        if resposta.ok and "text/html" in content_type.lower():
-            for novo_url in extrair_urls_download_de_html(resposta.content):
-                novo_url = acrescentar_cache_buster(novo_url)
-                try:
-                    r2 = pedir_url(novo_url)
-                    if r2.ok and parece_excel(r2.content):
-                        info = {
-                            "origem": "extraído da preview HTML -> downloadUrl",
-                            "last_modified": r2.headers.get("Last-Modified", "sem info"),
-                        }
-                        return (r2.content, info) if com_info else r2.content
-                except Exception as exc:
-                    erros.append(f"downloadUrl extraído -> {type(exc).__name__}: {exc}")
-
-        inicio = resposta.content[:180].decode("utf-8", errors="ignore") if resposta.content else ""
-        erros.append(
-            f"{url} -> status {resposta.status_code}, content-type {content_type}, "
-            f"final {final_url}, início {inicio}"
+    if not resposta.ok:
+        inicio = resposta.text[:300] if resposta.text else ""
+        raise RuntimeError(
+            f"Falha ao descarregar a aba {nome_aba}: status {resposta.status_code}, "
+            f"content-type {content_type}, início da resposta: {inicio}"
         )
 
-    # 2) Depois tenta pedir um downloadUrl temporário novo à API pública.
-    try:
-        download_url, info = obter_download_url_via_api_onedrive(SHAREPOINT_EXCEL_URL)
-        resposta = pedir_url(download_url)
-        if resposta.ok and parece_excel(resposta.content):
-            return (resposta.content, info) if com_info else resposta.content
+    conteudo = resposta.content or b""
+    texto_inicio = conteudo[:300].decode("utf-8", errors="ignore").lower()
 
-        content_type = resposta.headers.get("Content-Type", "")
-        inicio = resposta.content[:180].decode("utf-8", errors="ignore") if resposta.content else ""
-        erros.append(
-            f"downloadUrl temporário -> status {resposta.status_code}, "
-            f"content-type {content_type}, início {inicio}"
+    # Quando a folha não está pública, o Google costuma devolver HTML em vez de CSV.
+    if "<html" in texto_inicio or "<!doctype" in texto_inicio:
+        raise RuntimeError(
+            f"A aba {nome_aba} devolveu HTML em vez de CSV. "
+            "Provavelmente o Google Sheets não está partilhado publicamente com permissão de visualização."
         )
-    except Exception as exc:
-        erros.append(f"API downloadUrl -> {type(exc).__name__}: {exc}")
 
-    detalhe = " | ".join(erros[-8:])
-    raise RuntimeError(
-        "Não foi possível descarregar um Excel válido e atualizado. "
-        "A app NÃO está a usar cache interna. Se o HASH em /debug-sharepoint não mudar "
-        "após alterares e guardares o Excel, então é o SharePoint/link público que está "
-        "a entregar uma versão antiga. Detalhes: "
-        f"{detalhe}"
-    )
+    info = {
+        "url": url,
+        "content_type": content_type,
+        "tamanho": str(len(conteudo)),
+        "sha256": hashlib.sha256(conteudo).hexdigest(),
+        "hora": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return (conteudo, info) if com_info else conteudo
 
 
-def obter_excel_bytes():
-    # Importante:
-    # - NÃO existe cache global.
-    # - Cada refresh da página cria um novo request Flask.
-    # - Dentro do mesmo request, guardamos em g só para não descarregar 2 vezes
-    #   quando a mesma página lê Compras e Localizações.
+def limpar_valor(valor):
+    """Converte valores vindos do Google Sheets para formatos simples usados pelos templates."""
+    if pd.isna(valor):
+        return ""
+    if isinstance(valor, pd.Timestamp):
+        return valor.strftime("%Y-%m-%d")
+    return valor
+
+
+def ler_google_sheet(nome_aba):
+    # Dentro do mesmo request guardamos em g só para não descarregar a mesma aba duas vezes.
+    # Em cada refresh/pedido novo, volta a pedir os dados ao Google Sheets.
     if has_request_context():
-        if not hasattr(g, "excel_bytes_request"):
-            conteudo = descarregar_excel_por_link_publico()
-            validar_conteudo_excel(conteudo, SHAREPOINT_EXCEL_URL)
-            g.excel_bytes_request = conteudo
-        return g.excel_bytes_request
+        if not hasattr(g, "google_sheet_tables_request"):
+            g.google_sheet_tables_request = {}
+        if nome_aba not in g.google_sheet_tables_request:
+            conteudo = descarregar_csv_google_sheets(nome_aba)
+            tabela = pd.read_csv(BytesIO(conteudo))
+            try:
+                tabela = tabela.map(limpar_valor)
+            except AttributeError:
+                tabela = tabela.applymap(limpar_valor)
+            g.google_sheet_tables_request[nome_aba] = tabela.to_dict(orient="records")
+        return g.google_sheet_tables_request[nome_aba]
 
-    conteudo = descarregar_excel_por_link_publico()
-    validar_conteudo_excel(conteudo, SHAREPOINT_EXCEL_URL)
-    return conteudo
-
-
-def ler_excel(nome_folha):
-    conteudo_excel = obter_excel_bytes()
-    tabela = pd.read_excel(BytesIO(conteudo_excel), sheet_name=nome_folha, engine="openpyxl")
+    conteudo = descarregar_csv_google_sheets(nome_aba)
+    tabela = pd.read_csv(BytesIO(conteudo))
     try:
-        tabela = tabela.map(limpar_valor_excel)
+        tabela = tabela.map(limpar_valor)
     except AttributeError:
-        tabela = tabela.applymap(limpar_valor_excel)
+        tabela = tabela.applymap(limpar_valor)
     return tabela.to_dict(orient="records")
 
 
 def ler_compras():
-    return ler_excel("Compras")
+    return ler_google_sheet(GOOGLE_COMPRAS_SHEET)
 
 
 def ler_localizacoes():
-    return ler_excel("Localizações")
+    return ler_google_sheet(GOOGLE_LOCALIZACOES_SHEET)
 
 
 def numero(valor, defeito=0):
@@ -406,10 +207,14 @@ def numero(valor, defeito=0):
 
 
 def data_para_ordenar(valor):
-    try:
-        return datetime.strptime(str(valor)[:10], "%Y-%m-%d")
-    except ValueError:
-        return datetime.min
+    valor = str(valor or "").strip()
+    formatos = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"]
+    for formato in formatos:
+        try:
+            return datetime.strptime(valor[:10], formato)
+        except ValueError:
+            continue
+    return datetime.min
 
 
 def compras_sem_nif(compras):
@@ -417,10 +222,8 @@ def compras_sem_nif(compras):
     for compra in compras:
         nova = dict(compra)
         nova.pop("NIF", None)
-        # Removido da página pública, como tinhas pedido antes
         nova.pop("Metodo_Pagamento", None)
-        return_nome = nova
-        resultado.append(return_nome)
+        resultado.append(nova)
     return resultado
 
 
@@ -435,7 +238,7 @@ def ultimos_precos_por_marca(compras):
         ultimos[marca] = {
             "combustivel": combustivel,
             "preco": preco,
-            "data": data
+            "data": data,
         }
     return ultimos
 
@@ -456,13 +259,12 @@ def dados_mapa(localizacoes, compras):
             "concelho": loc.get("Concelho", ""),
             "preco": info_preco.get("preco", "Sem registo"),
             "combustivel": info_preco.get("combustivel", ""),
-            "data_preco": info_preco.get("data", "")
+            "data_preco": info_preco.get("data", ""),
         })
     return pontos
 
 
 def dados_grafico_precos(compras):
-    # Média diária por tipo de combustível
     agrupado = defaultdict(list)
     for compra in compras:
         data = compra.get("Data", "")
@@ -471,7 +273,7 @@ def dados_grafico_precos(compras):
         if data and combustivel and preco:
             agrupado[(data, combustivel)].append(preco)
 
-    datas = sorted({data for data, _ in agrupado.keys()})
+    datas = sorted({data for data, _ in agrupado.keys()}, key=data_para_ordenar)
     combustiveis = sorted({comb for _, comb in agrupado.keys()})
 
     datasets = []
@@ -510,7 +312,7 @@ def estatisticas_avancadas(compras):
             "compras": valores["compras"],
             "litros": round(valores["litros"], 2),
             "total": round(valores["total"], 2),
-            "media": round(valores["total"] / valores["litros"], 3) if valores["litros"] else 0
+            "media": round(valores["total"] / valores["litros"], 3) if valores["litros"] else 0,
         })
 
     tabela_combustivel = []
@@ -520,7 +322,7 @@ def estatisticas_avancadas(compras):
             "compras": valores["compras"],
             "litros": round(valores["litros"], 2),
             "total": round(valores["total"], 2),
-            "media": round(valores["total"] / valores["litros"], 3) if valores["litros"] else 0
+            "media": round(valores["total"] / valores["litros"], 3) if valores["litros"] else 0,
         })
 
     tabela_marca = sorted(tabela_marca, key=lambda x: x["total"], reverse=True)
@@ -528,12 +330,12 @@ def estatisticas_avancadas(compras):
 
     grafico_marcas = {
         "labels": [linha["marca"] for linha in tabela_marca],
-        "data": [linha["total"] for linha in tabela_marca]
+        "data": [linha["total"] for linha in tabela_marca],
     }
 
     grafico_combustiveis = {
         "labels": [linha["combustivel"] for linha in tabela_combustivel],
-        "data": [linha["litros"] for linha in tabela_combustivel]
+        "data": [linha["litros"] for linha in tabela_combustivel],
     }
 
     return tabela_marca, tabela_combustivel, grafico_marcas, grafico_combustiveis
@@ -573,7 +375,6 @@ def data_valida_e_nao_futura(valor):
 
 
 def nif_bem_estruturado(nif):
-    # Para este projeto valida-se a estrutura: exatamente 9 dígitos.
     return bool(re.fullmatch(r"\d{9}", texto(nif)))
 
 
@@ -582,7 +383,7 @@ def adicionar_erro(erros, tipo, linha, problema, motivo):
         "tipo": tipo,
         "linha": linha,
         "problema": problema,
-        "motivo": motivo
+        "motivo": motivo,
     })
 
 
@@ -646,13 +447,7 @@ def verificar_integridade_dados():
         if preco_num and litros_num and total_num:
             total_esperado = round(preco_num * litros_num, 2)
             if abs(total_esperado - total_num) > 0.05:
-                adicionar_erro(
-                    erros,
-                    "Compra",
-                    indice,
-                    f"Valor total incoerente: {total}",
-                    f"O total deveria ser aproximadamente {total_esperado}, porque preço x litros = total."
-                )
+                adicionar_erro(erros, "Compra", indice, f"Valor total incoerente: {total}", f"O total deveria ser aproximadamente {total_esperado}, porque preço x litros = total.")
 
     for indice, loc in enumerate(localizacoes, start=2):
         id_loc = obter_coluna(loc, ["LocalizacaoID", "ID", "Id"])
@@ -687,25 +482,44 @@ def verificar_integridade_dados():
     return erros, len(compras), len(localizacoes)
 
 
+@app.route("/debug-google-sheets")
+def debug_google_sheets():
+    try:
+        compras_csv, compras_info = descarregar_csv_google_sheets(GOOGLE_COMPRAS_SHEET, com_info=True)
+        localizacoes_csv, localizacoes_info = descarregar_csv_google_sheets(GOOGLE_LOCALIZACOES_SHEET, com_info=True)
+
+        compras_preview = pd.read_csv(BytesIO(compras_csv))
+        localizacoes_preview = pd.read_csv(BytesIO(localizacoes_csv))
+
+        return (
+            "OK - Google Sheets descarregado AGORA pelo servidor.<br>"
+            f"Hora do servidor: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>"
+            f"Aba compras: {html.escape(GOOGLE_COMPRAS_SHEET)}<br>"
+            f"Linhas compras: {len(compras_preview)}<br>"
+            f"SHA256 compras: {compras_info['sha256']}<br>"
+            f"Aba localizações: {html.escape(GOOGLE_LOCALIZACOES_SHEET)}<br>"
+            f"Linhas localizações: {len(localizacoes_preview)}<br>"
+            f"SHA256 localizações: {localizacoes_info['sha256']}<br>"
+        )
+    except Exception as erro:
+        return f"ERRO GOOGLE SHEETS: {html.escape(str(erro))}", 500
+
+
 @app.route("/")
 def home():
-    # Lê SEMPRE o Excel atualizado em cada refresh.
-    # IMPORTANTE: usamos TODAS as compras para calcular mapa/gráficos,
-    # para os preços mais recentes não ficarem presos às primeiras 300 linhas.
     compras_todas = ler_compras()
     localizacoes = ler_localizacoes()
 
     mapa = dados_mapa(localizacoes, compras_todas)
     grafico_precos = dados_grafico_precos(compras_todas)
 
-    # Só limitamos a tabela pública para a página não ficar pesada.
     compras_visiveis = compras_todas[:300]
 
     return render_template(
         "home.html",
         compras=compras_sem_nif(compras_visiveis),
         mapa_json=json.dumps(mapa, ensure_ascii=False),
-        grafico_precos_json=json.dumps(grafico_precos, ensure_ascii=False)
+        grafico_precos_json=json.dumps(grafico_precos, ensure_ascii=False),
     )
 
 
@@ -739,7 +553,6 @@ def compras_privadas():
     if not verificar_acesso("compras"):
         return redirect(url_for("acesso"))
 
-    # Página privada: mostra todas as compras do Excel atualizado.
     compras = ler_compras()
     return render_template("compras_privadas.html", compras=compras)
 
@@ -759,7 +572,7 @@ def avancado():
         tabela_combustivel=tabela_combustivel,
         grafico_marcas_json=json.dumps(grafico_marcas, ensure_ascii=False),
         grafico_combustiveis_json=json.dumps(grafico_combustiveis, ensure_ascii=False),
-        grafico_precos_json=json.dumps(grafico_precos, ensure_ascii=False)
+        grafico_precos_json=json.dumps(grafico_precos, ensure_ascii=False),
     )
 
 
@@ -780,7 +593,7 @@ def localizacoes_privadas():
         "localizacoes.html",
         localizacoes=mapa,
         mapa_json=json.dumps(mapa, ensure_ascii=False),
-        marcas=marcas
+        marcas=marcas,
     )
 
 
@@ -796,7 +609,7 @@ def integridade():
         erros=erros,
         total_erros=len(erros),
         total_compras=total_compras,
-        total_localizacoes=total_localizacoes
+        total_localizacoes=total_localizacoes,
     )
 
 
