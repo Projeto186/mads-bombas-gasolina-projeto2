@@ -29,9 +29,6 @@ EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2.xlsx"
 # Para o Render ir buscar os dados ao SharePoint, define estas variáveis no Render:
 # SHAREPOINT_EXCEL_URL = link de partilha do Excel no SharePoint
 # MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET = credenciais Microsoft Graph
-#
-# Se o link do SharePoint for público/anónimo, podes usar só SHAREPOINT_EXCEL_URL.
-# Se o ficheiro exigir login Microsoft, tens obrigatoriamente de usar Microsoft Graph.
 SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGATNiizUfEMOJ6bBHQGIOEAw?e=EHqrQw").strip()
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "").strip()
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
