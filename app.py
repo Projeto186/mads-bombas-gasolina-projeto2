@@ -28,7 +28,7 @@ CHAVES_PRIVADAS = {
 # A aplicação usa APENAS este link público SharePoint/OneDrive.
 # Não usa Excel local, não usa CSV local e não precisa de variável no Render.
 SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2"
-SHAREPOINT_CACHE_SECONDS = 60
+SHAREPOINT_CACHE_SECONDS = 0
 
 _excel_cache = {
     "created_at": 0,
