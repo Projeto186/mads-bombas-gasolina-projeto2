@@ -1,9 +1,11 @@
 from flask import Flask, render_template, request, redirect, url_for, session
-import csv
 import json
 import re
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
 
 app = Flask(__name__)
 app.secret_key = "trocar_esta_chave_secreta"
@@ -16,21 +18,34 @@ CHAVES_PRIVADAS = {
     "integridade123": "integridade"
 }
 
-COMPRAS_CSV = "compras.csv"
-LOCALIZACOES_CSV = "localizacoes.csv"
+BASE_DIR = Path(__file__).resolve().parent
+EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2.xlsx"
 
 
-def ler_csv(caminho):
-    with open(caminho, encoding="utf-8-sig", newline="") as ficheiro:
-        return list(csv.DictReader(ficheiro))
+def limpar_valor_excel(valor):
+    """Converte valores vindos do Excel para formatos simples usados pelos templates."""
+    if pd.isna(valor):
+        return ""
+    if isinstance(valor, pd.Timestamp):
+        return valor.strftime("%Y-%m-%d")
+    return valor
+
+
+def ler_excel(nome_folha):
+    if not EXCEL_DB.exists():
+        raise FileNotFoundError(f"Ficheiro Excel não encontrado: {EXCEL_DB}")
+
+    tabela = pd.read_excel(EXCEL_DB, sheet_name=nome_folha, engine="openpyxl")
+    tabela = tabela.applymap(limpar_valor_excel)
+    return tabela.to_dict(orient="records")
 
 
 def ler_compras():
-    return ler_csv(COMPRAS_CSV)
+    return ler_excel("Compras")
 
 
 def ler_localizacoes():
-    return ler_csv(LOCALIZACOES_CSV)
+    return ler_excel("Localizações")
 
 
 def numero(valor, defeito=0):
