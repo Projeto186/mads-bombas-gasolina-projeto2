@@ -1,4 +1,4 @@
-# LINK_PUBLICO_ONLY_FINAL_20260617
+# APP_PY_LINK_FIXO_NO_CODIGO_20260617
 from flask import Flask, render_template, request, redirect, url_for, session
 import base64
 import html
@@ -10,7 +10,6 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
-
 import pandas as pd
 import requests
 
@@ -25,12 +24,11 @@ CHAVES_PRIVADAS = {
     "integridade123": "integridade"
 }
 
-# A aplicação usa APENAS um link público do Excel.
-# Não existe fallback para ficheiro local.
-# No Render, define SHAREPOINT_EXCEL_URL com o link público do Excel.
-# Pode ser um link de SharePoint/OneDrive; a app tenta converter para download direto.
-SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "").strip()
-SHAREPOINT_CACHE_SECONDS = int(os.environ.get("SHAREPOINT_CACHE_SECONDS", "60"))
+# LINK_PUBLICO_FIXO_NO_CODIGO_20260617
+# A aplicação usa APENAS este link público SharePoint/OneDrive.
+# Não usa Excel local, não usa CSV local e não precisa de variável no Render.
+SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2"
+SHAREPOINT_CACHE_SECONDS = 60
 
 _excel_cache = {
     "created_at": 0,
@@ -50,8 +48,17 @@ HTTP_HEADERS = {
 }
 
 
+def limpar_valor_excel(valor):
+    """Converte valores vindos do Excel para formatos simples usados pelos templates."""
+    if pd.isna(valor):
+        return ""
+    if isinstance(valor, pd.Timestamp):
+        return valor.strftime("%Y-%m-%d")
+    return valor
+
+
 def acrescentar_parametro_download(url):
-    """Adiciona download=1 sem estragar os outros parâmetros do link."""
+    """Adiciona download=1 ao link sem estragar os outros parâmetros."""
     parsed = urlparse(url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
     query["download"] = "1"
@@ -67,7 +74,7 @@ def criar_share_id(share_url):
 
 
 def candidatos_para_download(url):
-    """Gera várias formas possíveis de descarregar o mesmo ficheiro por link."""
+    """Gera várias tentativas para transformar o link público em download real do Excel."""
     urls = []
 
     def add(u):
@@ -90,14 +97,13 @@ def parece_excel(conteudo):
 
 
 def extrair_urls_download_de_html(conteudo):
-    """Tenta encontrar URLs reais de download escondidas na página HTML do SharePoint."""
+    """Tenta encontrar um URL real de download dentro da página HTML/preview do SharePoint."""
     texto_html = conteudo.decode("utf-8", errors="ignore")
     texto_html = html.unescape(texto_html)
     texto_html = texto_html.replace("\\u0026", "&")
     texto_html = texto_html.replace("\\/", "/")
 
     encontrados = []
-
     padroes = [
         r'"downloadUrl"\s*:\s*"([^"]+)"',
         r'"@content\.downloadUrl"\s*:\s*"([^"]+)"',
@@ -122,7 +128,7 @@ def validar_conteudo_excel(conteudo, origem=""):
     inicio = conteudo[:300].decode("utf-8", errors="ignore") if conteudo else ""
     raise RuntimeError(
         "O link não devolveu um ficheiro Excel (.xlsx) válido. "
-        "Confirmar que o link é público e que permite download direto. "
+        "Confirma que o link abre em janela anónima e que permite download. "
         f"Origem tentada: {origem}. "
         f"Início da resposta recebida: {inicio}"
     )
@@ -138,12 +144,6 @@ def pedir_url(url):
 
 
 def descarregar_excel_por_link_publico():
-    if not SHAREPOINT_EXCEL_URL:
-        raise RuntimeError(
-            "SHAREPOINT_EXCEL_URL não está definida no Render. "
-            "Esta aplicação usa apenas link público e não usa ficheiro local."
-        )
-
     erros = []
     visitados = set()
     fila = candidatos_para_download(SHAREPOINT_EXCEL_URL)
@@ -180,7 +180,7 @@ def descarregar_excel_por_link_publico():
     detalhe = " | ".join(erros[-4:])
     raise RuntimeError(
         "Não foi possível descarregar um Excel válido através do link público. "
-        "Se abrir no browser mas falhar aqui, provavelmente é apenas preview/login e não download real. "
+        "Se abrir no browser mas falhar aqui, provavelmente é preview/login e não download real. "
         f"Detalhes: {detalhe}"
     )
 
@@ -193,123 +193,6 @@ def obter_excel_bytes():
 
     conteudo = descarregar_excel_por_link_publico()
     validar_conteudo_excel(conteudo, SHAREPOINT_EXCEL_URL)
-
-    _excel_cache["content"] = conteudo
-    _excel_cache["created_at"] = agora
-    return conteudo
-
-def limpar_valor_excel(valor):
-    """Converte valores vindos do Excel para formatos simples usados pelos templates."""
-    if pd.isna(valor):
-        return ""
-    if isinstance(valor, pd.Timestamp):
-        return valor.strftime("%Y-%m-%d")
-    return valor
-
-
-def validar_conteudo_excel(conteudo):
-    # Ficheiros .xlsx são ficheiros ZIP e começam normalmente por PK.
-    # Se o SharePoint devolver uma página de login HTML, isto evita um erro confuso no pandas.
-    if not conteudo or not conteudo[:2] == b"PK":
-        inicio = conteudo[:120].decode("utf-8", errors="ignore") if conteudo else ""
-        raise RuntimeError(
-            "O SharePoint não devolveu um ficheiro Excel válido. "
-            "Provavelmente devolveu uma página de login/HTML. "
-            "Se o ficheiro não for público, tens de configurar Microsoft Graph no Render. "
-            f"Início da resposta recebida: {inicio}"
-        )
-
-
-def criar_share_id(share_url):
-    encoded = base64.urlsafe_b64encode(share_url.encode("utf-8")).decode("utf-8")
-    encoded = encoded.rstrip("=")
-    return "u!" + encoded
-
-
-def obter_token_graph():
-    if not (MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET):
-        raise RuntimeError(
-            "Faltam credenciais Microsoft Graph. Define MS_TENANT_ID, "
-            "MS_CLIENT_ID e MS_CLIENT_SECRET no Render."
-        )
-
-    token_url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
-    resposta = requests.post(
-        token_url,
-        data={
-            "client_id": MS_CLIENT_ID,
-            "client_secret": MS_CLIENT_SECRET,
-            "scope": "https://graph.microsoft.com/.default",
-            "grant_type": "client_credentials"
-        },
-        timeout=30
-    )
-
-    if not resposta.ok:
-        raise RuntimeError(
-            "Não foi possível obter token do Microsoft Graph. "
-            f"Status {resposta.status_code}: {resposta.text[:500]}"
-        )
-
-    return resposta.json()["access_token"]
-
-
-def descarregar_excel_por_graph():
-    token = obter_token_graph()
-    share_id = criar_share_id(SHAREPOINT_EXCEL_URL)
-    url = f"https://graph.microsoft.com/v1.0/shares/{share_id}/driveItem/content"
-
-    resposta = requests.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        allow_redirects=True,
-        timeout=60
-    )
-
-    if not resposta.ok:
-        raise RuntimeError(
-            "Não foi possível descarregar o Excel pelo Microsoft Graph. "
-            f"Status {resposta.status_code}: {resposta.text[:500]}"
-        )
-
-    validar_conteudo_excel(resposta.content)
-    return resposta.content
-
-
-def descarregar_excel_por_link_publico():
-    url = SHAREPOINT_EXCEL_URL
-    if "download=1" not in url:
-        separador = "&" if "?" in url else "?"
-        url = f"{url}{separador}download=1"
-
-    resposta = requests.get(url, allow_redirects=True, timeout=60)
-
-    if not resposta.ok:
-        raise RuntimeError(
-            "Não foi possível descarregar o Excel pelo link público do SharePoint. "
-            f"Status {resposta.status_code}: {resposta.text[:500]}"
-        )
-
-    validar_conteudo_excel(resposta.content)
-    return resposta.content
-
-
-def obter_excel_bytes():
-    agora = time.time()
-
-    if _excel_cache["content"] is not None and (agora - _excel_cache["created_at"] < SHAREPOINT_CACHE_SECONDS):
-        return _excel_cache["content"]
-
-    if not SHAREPOINT_EXCEL_URL:
-        raise RuntimeError(
-            "SHAREPOINT_EXCEL_URL não está definida. "
-            "Esta aplicação usa apenas SharePoint e não usa ficheiro Excel local."
-        )
-
-    if MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET:
-        conteudo = descarregar_excel_por_graph()
-    else:
-        conteudo = descarregar_excel_por_link_publico()
 
     _excel_cache["content"] = conteudo
     _excel_cache["created_at"] = agora
