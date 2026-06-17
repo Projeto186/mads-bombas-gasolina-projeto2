@@ -689,14 +689,21 @@ def verificar_integridade_dados():
 
 @app.route("/")
 def home():
-    compras = ler_compras()[:300]
+    # Lê SEMPRE o Excel atualizado em cada refresh.
+    # IMPORTANTE: usamos TODAS as compras para calcular mapa/gráficos,
+    # para os preços mais recentes não ficarem presos às primeiras 300 linhas.
+    compras_todas = ler_compras()
     localizacoes = ler_localizacoes()
-    mapa = dados_mapa(localizacoes, compras)
-    grafico_precos = dados_grafico_precos(compras)
+
+    mapa = dados_mapa(localizacoes, compras_todas)
+    grafico_precos = dados_grafico_precos(compras_todas)
+
+    # Só limitamos a tabela pública para a página não ficar pesada.
+    compras_visiveis = compras_todas[:300]
 
     return render_template(
         "home.html",
-        compras=compras_sem_nif(compras),
+        compras=compras_sem_nif(compras_visiveis),
         mapa_json=json.dumps(mapa, ensure_ascii=False),
         grafico_precos_json=json.dumps(grafico_precos, ensure_ascii=False)
     )
@@ -732,7 +739,8 @@ def compras_privadas():
     if not verificar_acesso("compras"):
         return redirect(url_for("acesso"))
 
-    compras = ler_compras()[:300]
+    # Página privada: mostra todas as compras do Excel atualizado.
+    compras = ler_compras()
     return render_template("compras_privadas.html", compras=compras)
 
 
