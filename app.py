@@ -1,3 +1,4 @@
+# SHAREPOINT_ONLY_FINAL_SEM_LOCAL_20260617
 from flask import Flask, render_template, request, redirect, url_for, session
 import base64
 from io import BytesIO
@@ -22,9 +23,9 @@ CHAVES_PRIVADAS = {
 }
 
 # A aplicação usa apenas SharePoint. Não existe fallback para ficheiro Excel local.
-# No Render, define SHAREPOINT_EXCEL_URL com o link de partilha do Excel.
+# No Render, define obrigatoriamente SHAREPOINT_EXCEL_URL com o link de partilha do Excel.
 # Se o ficheiro não for público, define também MS_TENANT_ID, MS_CLIENT_ID e MS_CLIENT_SECRET.
-SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGATNiizUfEMOJ6bBHQGIOEAw?e=EHqrQw").strip()
+SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "").strip()
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "").strip()
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
 MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "").strip()
