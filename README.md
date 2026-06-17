@@ -48,4 +48,27 @@ Para facilitar a execução sem instalar bibliotecas extra, as folhas do Excel f
 - `localizacoes.csv`
 
 A aplicação Flask lê estes dois ficheiros CSV.
-"# mads-bombas-gasolina-projeto2" 
+"# mads-bombas-gasolina-projeto2"
+
+## Deploy no Render
+
+Build Command:
+
+```bash
+pip install -r requirements.txt
+```
+
+Start Command:
+
+```bash
+gunicorn app:app
+```
+
+O ficheiro `Procfile` também inclui este arranque:
+
+```text
+web: gunicorn app:app
+```
+
+A aplicação tenta ler primeiro `Base_Dados_Projeto2.xlsx`. Se esse ficheiro não estiver disponível no deploy, usa automaticamente os ficheiros `compras.csv` e `localizacoes.csv`.
+

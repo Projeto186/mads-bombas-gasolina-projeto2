@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, session
 import json
+import os
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -8,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 app = Flask(__name__)
-app.secret_key = "trocar_esta_chave_secreta"
+app.secret_key = os.environ.get("SECRET_KEY", "trocar_esta_chave_secreta")
 
 # Cada página privada tem a sua própria chave
 CHAVES_PRIVADAS = {
@@ -20,10 +21,12 @@ CHAVES_PRIVADAS = {
 
 BASE_DIR = Path(__file__).resolve().parent
 EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2.xlsx"
+CSV_COMPRAS = BASE_DIR / "compras.csv"
+CSV_LOCALIZACOES = BASE_DIR / "localizacoes.csv"
 
 
 def limpar_valor_excel(valor):
-    """Converte valores vindos do Excel para formatos simples usados pelos templates."""
+    """Converte valores vindos do Excel/CSV para formatos simples usados pelos templates."""
     if pd.isna(valor):
         return ""
     if isinstance(valor, pd.Timestamp):
@@ -31,21 +34,46 @@ def limpar_valor_excel(valor):
     return valor
 
 
-def ler_excel(nome_folha):
-    if not EXCEL_DB.exists():
-        raise FileNotFoundError(f"Ficheiro Excel não encontrado: {EXCEL_DB}")
-
-    tabela = pd.read_excel(EXCEL_DB, sheet_name=nome_folha, engine="openpyxl")
-    tabela = tabela.applymap(limpar_valor_excel)
+def limpar_tabela(tabela):
+    if hasattr(tabela, "map"):
+        tabela = tabela.map(limpar_valor_excel)
+    else:
+        tabela = tabela.applymap(limpar_valor_excel)
     return tabela.to_dict(orient="records")
 
 
+def ler_tabela(nome_folha, ficheiro_csv):
+    """Lê primeiro o Excel. Se não existir/falhar no Render, usa o CSV correspondente."""
+    erro_excel = None
+
+    if EXCEL_DB.exists():
+        try:
+            tabela = pd.read_excel(EXCEL_DB, sheet_name=nome_folha, engine="openpyxl")
+            return limpar_tabela(tabela)
+        except Exception as exc:
+            erro_excel = exc
+
+    if ficheiro_csv.exists():
+        try:
+            tabela = pd.read_csv(ficheiro_csv, encoding="utf-8-sig")
+            return limpar_tabela(tabela)
+        except Exception as exc:
+            raise RuntimeError(f"Erro ao ler {ficheiro_csv.name}: {exc}") from exc
+
+    if erro_excel:
+        raise RuntimeError(f"Erro ao ler a folha {nome_folha} do Excel: {erro_excel}") from erro_excel
+
+    raise FileNotFoundError(
+        f"Não foi encontrada a base de dados. Esperado: {EXCEL_DB.name} ou {ficheiro_csv.name}"
+    )
+
+
 def ler_compras():
-    return ler_excel("Compras")
+    return ler_tabela("Compras", CSV_COMPRAS)
 
 
 def ler_localizacoes():
-    return ler_excel("Localizações")
+    return ler_tabela("Localizações", CSV_LOCALIZACOES)
 
 
 def numero(valor, defeito=0):
@@ -335,6 +363,11 @@ def verificar_integridade_dados():
             adicionar_erro(erros, "Localização", indice, f"Cor inválida: {cor}", "A cor do mapa deve estar no formato hexadecimal, por exemplo #FF0000.")
 
     return erros, len(compras), len(localizacoes)
+
+
+@app.route("/healthz")
+def healthz():
+    return "ok", 200
 
 
 @app.route("/")
