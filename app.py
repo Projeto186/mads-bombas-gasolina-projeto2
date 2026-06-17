@@ -1,4 +1,4 @@
-# APP_PY_SEM_CACHE_RAPIDO_VISIVEL_20260617
+# APP_PY_LIVE_SHAREPOINT_DOWNLOADURL_20260617
 from flask import Flask, render_template, request, redirect, url_for, session
 import base64
 import html
@@ -27,7 +27,7 @@ CHAVES_PRIVADAS = {
 # LINK_PUBLICO_FIXO_NO_CODIGO_20260617
 # A aplicação usa APENAS este link público SharePoint/OneDrive.
 # Não usa Excel local, não usa CSV local e não precisa de variável no Render.
-SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2&download=1"
+SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2"
 SHAREPOINT_CACHE_SECONDS = 0  # sem cache: cada refresh volta a descarregar o Excel
 
 HTTP_HEADERS = {
@@ -87,11 +87,17 @@ def mostrar_erro_visivel(erro):
 
 @app.route("/debug-sharepoint")
 def debug_sharepoint():
-    # Página simples para testar se o servidor está a receber mesmo um .xlsx.
+    # Página simples para testar se o servidor está a receber mesmo um .xlsx atualizado.
     try:
-        conteudo = descarregar_excel_por_link_publico()
+        conteudo, info = descarregar_excel_por_link_publico(com_info=True)
         primeiros_bytes = conteudo[:4].hex(" ").upper()
-        return f"OK - Excel recebido. Primeiros bytes: {primeiros_bytes}. Tamanho: {len(conteudo)} bytes."
+        return (
+            "OK - Excel recebido. "
+            f"Primeiros bytes: {primeiros_bytes}. "
+            f"Tamanho: {len(conteudo)} bytes. "
+            f"Origem: {html.escape(info.get('origem', ''))}. "
+            f"Última modificação indicada pelo SharePoint: {html.escape(info.get('last_modified', 'sem info'))}."
+        )
     except Exception as erro:
         return f"ERRO SHAREPOINT: {html.escape(str(erro))}", 500
 
@@ -127,6 +133,49 @@ def criar_share_id(share_url):
     encoded = base64.urlsafe_b64encode(share_url.encode("utf-8")).decode("utf-8")
     encoded = encoded.rstrip("=")
     return "u!" + encoded
+
+
+def obter_download_url_via_api_onedrive(url):
+    """
+    Para links públicos de OneDrive/SharePoint, primeiro pede à API pública
+    um downloadUrl temporário. Isto evita ficar preso a uma cópia antiga servida
+    pelo endpoint /root/content ou pela preview HTML.
+    """
+    share_id = criar_share_id(url)
+    metadata_url = f"https://api.onedrive.com/v1.0/shares/{share_id}/root"
+    metadata_url = acrescentar_cache_buster(metadata_url)
+
+    resposta = pedir_url(metadata_url)
+    if not resposta.ok:
+        raise RuntimeError(
+            f"API pública OneDrive falhou: status {resposta.status_code}, início: "
+            f"{resposta.text[:200]}"
+        )
+
+    try:
+        dados = resposta.json()
+    except Exception as exc:
+        raise RuntimeError(f"A API pública OneDrive não devolveu JSON válido: {exc}")
+
+    download_url = (
+        dados.get("@content.downloadUrl")
+        or dados.get("@microsoft.graph.downloadUrl")
+        or dados.get("downloadUrl")
+    )
+
+    if not download_url:
+        raise RuntimeError(
+            "A API pública OneDrive não devolveu downloadUrl. "
+            f"Resposta parcial: {str(dados)[:300]}"
+        )
+
+    info = {
+        "origem": "api.onedrive.com/root -> downloadUrl temporário",
+        "last_modified": dados.get("lastModifiedDateTime", ""),
+        "name": dados.get("name", ""),
+        "size": str(dados.get("size", "")),
+    }
+    return download_url, info
 
 
 def candidatos_para_download(url):
@@ -195,16 +244,38 @@ def validar_conteudo_excel(conteudo, origem=""):
 
 
 def pedir_url(url):
+    headers = dict(HTTP_HEADERS)
+    headers["X-Cache-Buster"] = str(int(time.time() * 1000))
     return requests.get(
         url,
-        headers=HTTP_HEADERS,
+        headers=headers,
         allow_redirects=True,
         timeout=12,
     )
 
 
-def descarregar_excel_por_link_publico():
+def descarregar_excel_por_link_publico(com_info=False):
     erros = []
+
+    # 1) Método principal: pedir SEMPRE um downloadUrl temporário novo à API pública.
+    # Isto é o mais próximo de "tempo real" sem autenticação Microsoft.
+    try:
+        download_url, info = obter_download_url_via_api_onedrive(SHAREPOINT_EXCEL_URL)
+        download_url = acrescentar_cache_buster(download_url)
+        resposta = pedir_url(download_url)
+        if resposta.ok and parece_excel(resposta.content):
+            return (resposta.content, info) if com_info else resposta.content
+
+        content_type = resposta.headers.get("Content-Type", "")
+        inicio = resposta.content[:160].decode("utf-8", errors="ignore") if resposta.content else ""
+        erros.append(
+            f"downloadUrl temporário -> status {resposta.status_code}, "
+            f"content-type {content_type}, início {inicio}"
+        )
+    except Exception as exc:
+        erros.append(f"API downloadUrl -> {type(exc).__name__}: {exc}")
+
+    # 2) Fallbacks: link direto, download=1 e extração de downloadUrl da preview HTML.
     visitados = set()
     fila = candidatos_para_download(SHAREPOINT_EXCEL_URL)
 
@@ -224,23 +295,27 @@ def descarregar_excel_por_link_publico():
         final_url = resposta.url
 
         if resposta.ok and parece_excel(resposta.content):
-            return resposta.content
+            info = {"origem": url, "last_modified": resposta.headers.get("Last-Modified", "")}
+            return (resposta.content, info) if com_info else resposta.content
 
         if resposta.ok and "text/html" in content_type.lower():
             for novo_url in extrair_urls_download_de_html(resposta.content):
+                novo_url = acrescentar_cache_buster(novo_url)
                 if novo_url not in visitados and novo_url not in fila:
                     fila.append(novo_url)
 
         inicio = resposta.content[:120].decode("utf-8", errors="ignore") if resposta.content else ""
         erros.append(
             f"{url} -> status {resposta.status_code}, content-type {content_type}, "
-            f"final {final_url}, inicio {inicio}"
+            f"final {final_url}, início {inicio}"
         )
 
-    detalhe = " | ".join(erros[-4:])
+    detalhe = " | ".join(erros[-6:])
     raise RuntimeError(
-        "Não foi possível descarregar um Excel válido através do link público. "
-        "Se abrir no browser mas falhar aqui, provavelmente é preview/login e não download real. "
+        "Não foi possível descarregar um Excel válido e atualizado através do link público. "
+        "Se isto só atualiza quando fazes deploy/commit, o SharePoint está provavelmente a servir "
+        "uma versão em cache do link público. Para atualização verdadeiramente instantânea, "
+        "é necessário usar Microsoft Graph autenticado. "
         f"Detalhes: {detalhe}"
     )
 
