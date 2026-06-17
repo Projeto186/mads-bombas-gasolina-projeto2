@@ -1,15 +1,19 @@
 from flask import Flask, render_template, request, redirect, url_for, session
+import base64
+from io import BytesIO
 import json
 import os
 import re
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "trocar_esta_chave_secreta")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mads_bombas_gasolina_2026_chave_segura")
 
 # Cada página privada tem a sua própria chave
 CHAVES_PRIVADAS = {
@@ -21,12 +25,27 @@ CHAVES_PRIVADAS = {
 
 BASE_DIR = Path(__file__).resolve().parent
 EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2.xlsx"
-CSV_COMPRAS = BASE_DIR / "compras.csv"
-CSV_LOCALIZACOES = BASE_DIR / "localizacoes.csv"
+
+# Para o Render ir buscar os dados ao SharePoint, define estas variáveis no Render:
+# SHAREPOINT_EXCEL_URL = link de partilha do Excel no SharePoint
+# MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET = credenciais Microsoft Graph
+#
+# Se o link do SharePoint for público/anónimo, podes usar só SHAREPOINT_EXCEL_URL.
+# Se o ficheiro exigir login Microsoft, tens obrigatoriamente de usar Microsoft Graph.
+SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGATNiizUfEMOJ6bBHQGIOEAw?e=EHqrQw").strip()
+MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "").strip()
+MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
+MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "").strip()
+SHAREPOINT_CACHE_SECONDS = int(os.environ.get("SHAREPOINT_CACHE_SECONDS", "60"))
+
+_excel_cache = {
+    "created_at": 0,
+    "content": None
+}
 
 
 def limpar_valor_excel(valor):
-    """Converte valores vindos do Excel/CSV para formatos simples usados pelos templates."""
+    """Converte valores vindos do Excel para formatos simples usados pelos templates."""
     if pd.isna(valor):
         return ""
     if isinstance(valor, pd.Timestamp):
@@ -34,46 +53,131 @@ def limpar_valor_excel(valor):
     return valor
 
 
-def limpar_tabela(tabela):
-    if hasattr(tabela, "map"):
-        tabela = tabela.map(limpar_valor_excel)
-    else:
-        tabela = tabela.applymap(limpar_valor_excel)
+def validar_conteudo_excel(conteudo):
+    # Ficheiros .xlsx são ficheiros ZIP e começam normalmente por PK.
+    # Se o SharePoint devolver uma página de login HTML, isto evita um erro confuso no pandas.
+    if not conteudo or not conteudo[:2] == b"PK":
+        inicio = conteudo[:120].decode("utf-8", errors="ignore") if conteudo else ""
+        raise RuntimeError(
+            "O SharePoint não devolveu um ficheiro Excel válido. "
+            "Provavelmente devolveu uma página de login/HTML. "
+            "Se o ficheiro não for público, tens de configurar Microsoft Graph no Render. "
+            f"Início da resposta recebida: {inicio}"
+        )
+
+
+def criar_share_id(share_url):
+    encoded = base64.urlsafe_b64encode(share_url.encode("utf-8")).decode("utf-8")
+    encoded = encoded.rstrip("=")
+    return "u!" + encoded
+
+
+def obter_token_graph():
+    if not (MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET):
+        raise RuntimeError(
+            "Faltam credenciais Microsoft Graph. Define MS_TENANT_ID, "
+            "MS_CLIENT_ID e MS_CLIENT_SECRET no Render."
+        )
+
+    token_url = f"https://login.microsoftonline.com/{MS_TENANT_ID}/oauth2/v2.0/token"
+    resposta = requests.post(
+        token_url,
+        data={
+            "client_id": MS_CLIENT_ID,
+            "client_secret": MS_CLIENT_SECRET,
+            "scope": "https://graph.microsoft.com/.default",
+            "grant_type": "client_credentials"
+        },
+        timeout=30
+    )
+
+    if not resposta.ok:
+        raise RuntimeError(
+            "Não foi possível obter token do Microsoft Graph. "
+            f"Status {resposta.status_code}: {resposta.text[:500]}"
+        )
+
+    return resposta.json()["access_token"]
+
+
+def descarregar_excel_por_graph():
+    token = obter_token_graph()
+    share_id = criar_share_id(SHAREPOINT_EXCEL_URL)
+    url = f"https://graph.microsoft.com/v1.0/shares/{share_id}/driveItem/content"
+
+    resposta = requests.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        allow_redirects=True,
+        timeout=60
+    )
+
+    if not resposta.ok:
+        raise RuntimeError(
+            "Não foi possível descarregar o Excel pelo Microsoft Graph. "
+            f"Status {resposta.status_code}: {resposta.text[:500]}"
+        )
+
+    validar_conteudo_excel(resposta.content)
+    return resposta.content
+
+
+def descarregar_excel_por_link_publico():
+    url = SHAREPOINT_EXCEL_URL
+    if "download=1" not in url:
+        separador = "&" if "?" in url else "?"
+        url = f"{url}{separador}download=1"
+
+    resposta = requests.get(url, allow_redirects=True, timeout=60)
+
+    if not resposta.ok:
+        raise RuntimeError(
+            "Não foi possível descarregar o Excel pelo link público do SharePoint. "
+            f"Status {resposta.status_code}: {resposta.text[:500]}"
+        )
+
+    validar_conteudo_excel(resposta.content)
+    return resposta.content
+
+
+def obter_excel_bytes():
+    agora = time.time()
+
+    if _excel_cache["content"] is not None and (agora - _excel_cache["created_at"] < SHAREPOINT_CACHE_SECONDS):
+        return _excel_cache["content"]
+
+    if SHAREPOINT_EXCEL_URL:
+        if MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET:
+            conteudo = descarregar_excel_por_graph()
+        else:
+            conteudo = descarregar_excel_por_link_publico()
+
+        _excel_cache["content"] = conteudo
+        _excel_cache["created_at"] = agora
+        return conteudo
+
+    if not EXCEL_DB.exists():
+        raise FileNotFoundError(
+            f"Ficheiro Excel local não encontrado: {EXCEL_DB}. "
+            "Ou adiciona o ficheiro localmente, ou define SHAREPOINT_EXCEL_URL no Render."
+        )
+
+    return EXCEL_DB.read_bytes()
+
+
+def ler_excel(nome_folha):
+    conteudo_excel = obter_excel_bytes()
+    tabela = pd.read_excel(BytesIO(conteudo_excel), sheet_name=nome_folha, engine="openpyxl")
+    tabela = tabela.applymap(limpar_valor_excel)
     return tabela.to_dict(orient="records")
 
 
-def ler_tabela(nome_folha, ficheiro_csv):
-    """Lê primeiro o Excel. Se não existir/falhar no Render, usa o CSV correspondente."""
-    erro_excel = None
-
-    if EXCEL_DB.exists():
-        try:
-            tabela = pd.read_excel(EXCEL_DB, sheet_name=nome_folha, engine="openpyxl")
-            return limpar_tabela(tabela)
-        except Exception as exc:
-            erro_excel = exc
-
-    if ficheiro_csv.exists():
-        try:
-            tabela = pd.read_csv(ficheiro_csv, encoding="utf-8-sig")
-            return limpar_tabela(tabela)
-        except Exception as exc:
-            raise RuntimeError(f"Erro ao ler {ficheiro_csv.name}: {exc}") from exc
-
-    if erro_excel:
-        raise RuntimeError(f"Erro ao ler a folha {nome_folha} do Excel: {erro_excel}") from erro_excel
-
-    raise FileNotFoundError(
-        f"Não foi encontrada a base de dados. Esperado: {EXCEL_DB.name} ou {ficheiro_csv.name}"
-    )
-
-
 def ler_compras():
-    return ler_tabela("Compras", CSV_COMPRAS)
+    return ler_excel("Compras")
 
 
 def ler_localizacoes():
-    return ler_tabela("Localizações", CSV_LOCALIZACOES)
+    return ler_excel("Localizações")
 
 
 def numero(valor, defeito=0):
@@ -363,11 +467,6 @@ def verificar_integridade_dados():
             adicionar_erro(erros, "Localização", indice, f"Cor inválida: {cor}", "A cor do mapa deve estar no formato hexadecimal, por exemplo #FF0000.")
 
     return erros, len(compras), len(localizacoes)
-
-
-@app.route("/healthz")
-def healthz():
-    return "ok", 200
 
 
 @app.route("/")
