@@ -19,7 +19,7 @@ CHAVES_PRIVADAS = {
 }
 
 BASE_DIR = Path(__file__).resolve().parent
-EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2.xlsx"
+EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2_Melhorada_Localizacoes.xlsx"
 
 
 def limpar_valor_excel(valor):
