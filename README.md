@@ -1,130 +1,158 @@
-# Projeto Flask - Bombas de Gasolina
+# MADS - Bombas de Gasolina
 
-README_SHAREPOINT_ONLY_20260617
+Aplicação Flask para visualizar e analisar dados de compras de combustível e localizações de postos, usando Google Sheets como fonte de dados.
 
-Aplicação Flask para visualização e análise de dados de bombas de gasolina, preparada para deploy no Render.
+## Fonte de dados
 
-A aplicação usa **apenas um ficheiro Excel alojado no SharePoint** como fonte de dados.
+A aplicação lê os dados diretamente a partir de um Google Sheets.
 
-Não usa ficheiros locais como:
+Google Sheets configurado:
 
-- `Base_Dados_Projeto2.xlsx`
-- `Base_Dados_Projeto2_Melhorada_Localizacoes.xlsx`
-- `compras.csv`
-- `localizacoes.csv`
-
-## 1) Fonte de dados
-
-A fonte de dados é definida através da variável de ambiente:
-
-```text
-SHAREPOINT_EXCEL_URL
+```txt
+https://docs.google.com/spreadsheets/d/189SiAMZfhSN-VXUazREAoStx-sEMSdVBso3s3wWccj0/edit?usp=sharing
 ```
 
-Esta variável deve conter o link de partilha do ficheiro Excel no SharePoint.
+O ficheiro deve ter, pelo menos, estas duas folhas:
 
-Se o ficheiro estiver protegido e não puder ser lido diretamente pelo link público, também devem ser configuradas estas variáveis no Render:
-
-```text
-MS_TENANT_ID
-MS_CLIENT_ID
-MS_CLIENT_SECRET
+```txt
+Compras
+Localizações
 ```
 
-## 2) Variáveis de ambiente no Render
+## Permissões do Google Sheets
 
-No Render, abrir o serviço da aplicação e configurar em **Environment**:
+No Google Sheets, confirma que o ficheiro está partilhado como:
 
-```text
-SHAREPOINT_EXCEL_URL=<link_do_excel_no_sharepoint>
-FLASK_SECRET_KEY=<uma_chave_segura>
+```txt
+Anyone with the link can view
 ```
 
-Opcionalmente, para ficheiros privados no SharePoint:
+Ou em português:
 
-```text
-MS_TENANT_ID=<tenant_id>
-MS_CLIENT_ID=<client_id>
-MS_CLIENT_SECRET=<client_secret>
+```txt
+Qualquer pessoa com o link pode ver
 ```
 
-Também é possível definir o tempo de cache do Excel:
+Sem esta permissão, o Render não consegue descarregar os dados.
 
-```text
-SHAREPOINT_CACHE_SECONDS=60
+## Funcionamento da atualização
+
+Quando alteras dados no Google Sheets:
+
+```txt
+Alterar Google Sheets
+↓
+Guardar/sincronizar automaticamente
+↓
+Fazer refresh no site
+↓
+A página mostra os dados novos
 ```
 
-## 3) Como executar localmente
+Não é necessário fazer commit para atualizar os dados.
 
-Instalar as dependências:
+O commit só é necessário quando alteras código.
+
+## Variáveis de ambiente no Render
+
+O `app.py` já tem o link do Google Sheets configurado por defeito.
+
+Mesmo assim, podes configurar no Render se quiseres controlar tudo por variáveis:
+
+```txt
+GOOGLE_SHEET_ID=https://docs.google.com/spreadsheets/d/189SiAMZfhSN-VXUazREAoStx-sEMSdVBso3s3wWccj0/edit?usp=sharing
+GOOGLE_COMPRAS_SHEET=Compras
+GOOGLE_LOCALIZACOES_SHEET=Localizações
+FLASK_SECRET_KEY=uma_chave_segura_qualquer
+```
+
+Se não colocares `GOOGLE_SHEET_ID`, a aplicação usa o link que já está escrito no código.
+
+## Teste de ligação ao Google Sheets
+
+Depois do deploy, abre:
+
+```txt
+/debug-google-sheets
+```
+
+Se estiver tudo correto, deve aparecer uma mensagem a indicar que o Google Sheets foi lido pelo servidor.
+
+Se der erro, verifica:
+
+1. se o link do Google Sheets está correto;
+2. se o ficheiro está público para leitura;
+3. se as folhas se chamam exatamente `Compras` e `Localizações`;
+4. se as colunas mantêm os nomes esperados.
+
+## Rotas principais
+
+```txt
+/                       Página pública
+/acesso                 Página para inserir chave privada
+/privado/compras        Compras privadas
+/privado/avancado       Estatísticas avançadas
+/privado/localizacoes   Localizações privadas
+/privado/integridade    Verificação de integridade dos dados
+/debug-google-sheets    Teste técnico da ligação ao Google Sheets
+/logout                 Terminar sessão
+```
+
+## Chaves privadas
+
+As páginas privadas usam estas chaves:
+
+```txt
+compras123       → compras
+avancado123      → avançado
+localizacoes123  → localizações
+integridade123   → integridade
+```
+
+## Deploy no Render
+
+Depois de substituir o `app.py` e o `README.md`, faz:
 
 ```bash
-pip install -r requirements.txt
+git add app.py README.md
+git commit -m "Atualizar projeto para Google Sheets"
+git push origin main
 ```
 
-Definir a variável de ambiente com o link do Excel.
+O Render deve fazer novo deploy automaticamente.
 
-No PowerShell:
+## Dependências
 
-```powershell
-$env:SHAREPOINT_EXCEL_URL="https://link-do-ficheiro-sharepoint"
-python app.py
+O projeto precisa destas dependências principais:
+
+```txt
+Flask
+pandas
+requests
+gunicorn
 ```
 
-Depois abrir no browser:
+Exemplo de `requirements.txt`:
 
-```text
-http://127.0.0.1:5000
+```txt
+Flask
+pandas
+requests
+gunicorn
 ```
 
-## 4) Deploy no Render
+## Comando de arranque no Render
 
-Build Command:
-
-```bash
-pip install -r requirements.txt
-```
-
-Start Command:
+No Render, o comando de start deve ser:
 
 ```bash
 gunicorn app:app
 ```
 
-O ficheiro `Procfile` também inclui este arranque:
+## Notas importantes
 
-```text
-web: gunicorn app:app
-```
-
-Depois de fazer push para o GitHub, no Render fazer:
-
-```text
-Manual Deploy > Deploy latest commit
-```
-
-## 5) Páginas da aplicação
-
-- `/` — página pública com mapa, gráfico e compras sem NIF.
-- `/acesso` — página para inserir chave privada.
-- `/privado/compras` — compras com NIF.
-- `/privado/avancado` — gráficos e tabelas avançadas.
-- `/privado/localizacoes` — lista completa de localizações e mapa com legenda.
-- `/privado/integridade` — verificação da integridade dos dados.
-
-## 6) Chaves privadas
-
-- `compras123` — permite entrar em `/privado/compras`.
-- `avancado123` — permite entrar em `/privado/avancado`.
-- `localizacoes123` — permite entrar em `/privado/localizacoes`.
-- `integridade123` — permite entrar em `/privado/integridade`.
-
-Cada chave só dá acesso à sua própria página privada.
-
-## 7) Notas importantes
-
-Este projeto está configurado para funcionar com dados vindos do SharePoint.
-
-Se `SHAREPOINT_EXCEL_URL` não estiver configurada corretamente, a aplicação pode falhar no arranque ou ao carregar os dados.
-
-Os ficheiros CSV locais e ficheiros Excel locais não fazem parte do fluxo atual da aplicação e não devem ser usados como fallback.
+- A página pública limita a tabela a 300 compras para não ficar pesada.
+- Os cálculos do mapa e dos gráficos devem usar todas as compras.
+- A página privada de compras deve mostrar todas as compras.
+- O browser recebe cabeçalhos para evitar cache de HTML antigo.
+- Sempre que fizeres refresh, o servidor tenta ler novamente os dados do Google Sheets.
