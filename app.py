@@ -7,8 +7,6 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
-
 import pandas as pd
 import requests
 
@@ -23,12 +21,9 @@ CHAVES_PRIVADAS = {
     "integridade123": "integridade"
 }
 
-BASE_DIR = Path(__file__).resolve().parent
-EXCEL_DB = BASE_DIR / "Base_Dados_Projeto2.xlsx"
-
-# Para o Render ir buscar os dados ao SharePoint, define estas variáveis no Render:
-# SHAREPOINT_EXCEL_URL = link de partilha do Excel no SharePoint
-# MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET = credenciais Microsoft Graph
+# A aplicação usa apenas SharePoint. Não existe fallback para ficheiro Excel local.
+# No Render, define SHAREPOINT_EXCEL_URL com o link de partilha do Excel.
+# Se o ficheiro não for público, define também MS_TENANT_ID, MS_CLIENT_ID e MS_CLIENT_SECRET.
 SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGATNiizUfEMOJ6bBHQGIOEAw?e=EHqrQw").strip()
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "").strip()
 MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
@@ -143,23 +138,20 @@ def obter_excel_bytes():
     if _excel_cache["content"] is not None and (agora - _excel_cache["created_at"] < SHAREPOINT_CACHE_SECONDS):
         return _excel_cache["content"]
 
-    if SHAREPOINT_EXCEL_URL:
-        if MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET:
-            conteudo = descarregar_excel_por_graph()
-        else:
-            conteudo = descarregar_excel_por_link_publico()
-
-        _excel_cache["content"] = conteudo
-        _excel_cache["created_at"] = agora
-        return conteudo
-
-    if not EXCEL_DB.exists():
-        raise FileNotFoundError(
-            f"Ficheiro Excel local não encontrado: {EXCEL_DB}. "
-            "Ou adiciona o ficheiro localmente, ou define SHAREPOINT_EXCEL_URL no Render."
+    if not SHAREPOINT_EXCEL_URL:
+        raise RuntimeError(
+            "SHAREPOINT_EXCEL_URL não está definida. "
+            "Esta aplicação usa apenas SharePoint e não usa ficheiro Excel local."
         )
 
-    return EXCEL_DB.read_bytes()
+    if MS_TENANT_ID and MS_CLIENT_ID and MS_CLIENT_SECRET:
+        conteudo = descarregar_excel_por_graph()
+    else:
+        conteudo = descarregar_excel_por_link_publico()
+
+    _excel_cache["content"] = conteudo
+    _excel_cache["created_at"] = agora
+    return conteudo
 
 
 def ler_excel(nome_folha):
