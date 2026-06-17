@@ -1,6 +1,7 @@
-# SHAREPOINT_ONLY_FINAL_SEM_LOCAL_20260617
+# LINK_PUBLICO_ONLY_FINAL_20260617
 from flask import Flask, render_template, request, redirect, url_for, session
 import base64
+import html
 from io import BytesIO
 import json
 import os
@@ -8,6 +9,8 @@ import re
 import time
 from collections import defaultdict
 from datetime import datetime
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+
 import pandas as pd
 import requests
 
@@ -22,13 +25,11 @@ CHAVES_PRIVADAS = {
     "integridade123": "integridade"
 }
 
-# A aplicação usa apenas SharePoint. Não existe fallback para ficheiro Excel local.
-# No Render, define obrigatoriamente SHAREPOINT_EXCEL_URL com o link de partilha do Excel.
-# Se o ficheiro não for público, define também MS_TENANT_ID, MS_CLIENT_ID e MS_CLIENT_SECRET.
+# A aplicação usa APENAS um link público do Excel.
+# Não existe fallback para ficheiro local.
+# No Render, define SHAREPOINT_EXCEL_URL com o link público do Excel.
+# Pode ser um link de SharePoint/OneDrive; a app tenta converter para download direto.
 SHAREPOINT_EXCEL_URL = os.environ.get("SHAREPOINT_EXCEL_URL", "").strip()
-MS_TENANT_ID = os.environ.get("MS_TENANT_ID", "").strip()
-MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID", "").strip()
-MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET", "").strip()
 SHAREPOINT_CACHE_SECONDS = int(os.environ.get("SHAREPOINT_CACHE_SECONDS", "60"))
 
 _excel_cache = {
@@ -36,6 +37,166 @@ _excel_cache = {
     "content": None
 }
 
+HTTP_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
+        "application/octet-stream,text/html,*/*"
+    ),
+}
+
+
+def acrescentar_parametro_download(url):
+    """Adiciona download=1 sem estragar os outros parâmetros do link."""
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["download"] = "1"
+    query.pop("web", None)
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def criar_share_id(share_url):
+    """Cria o shareId usado por endpoints públicos OneDrive/SharePoint."""
+    encoded = base64.urlsafe_b64encode(share_url.encode("utf-8")).decode("utf-8")
+    encoded = encoded.rstrip("=")
+    return "u!" + encoded
+
+
+def candidatos_para_download(url):
+    """Gera várias formas possíveis de descarregar o mesmo ficheiro por link."""
+    urls = []
+
+    def add(u):
+        if u and u not in urls:
+            urls.append(u)
+
+    add(url)
+    add(acrescentar_parametro_download(url))
+
+    share_id = criar_share_id(url)
+    add(f"https://api.onedrive.com/v1.0/shares/{share_id}/root/content")
+    add(f"https://graph.microsoft.com/v1.0/shares/{share_id}/driveItem/content")
+
+    return urls
+
+
+def parece_excel(conteudo):
+    # Ficheiros .xlsx são ZIP e começam por PK.
+    return bool(conteudo and conteudo[:2] == b"PK")
+
+
+def extrair_urls_download_de_html(conteudo):
+    """Tenta encontrar URLs reais de download escondidas na página HTML do SharePoint."""
+    texto_html = conteudo.decode("utf-8", errors="ignore")
+    texto_html = html.unescape(texto_html)
+    texto_html = texto_html.replace("\\u0026", "&")
+    texto_html = texto_html.replace("\\/", "/")
+
+    encontrados = []
+
+    padroes = [
+        r'"downloadUrl"\s*:\s*"([^"]+)"',
+        r'"@content\.downloadUrl"\s*:\s*"([^"]+)"',
+        r'(https://[^"\s<>]+download\.aspx[^"\s<>]+)',
+        r'(https://[^"\s<>]+/download[^"\s<>]+)',
+    ]
+
+    for padrao in padroes:
+        for match in re.findall(padrao, texto_html, flags=re.IGNORECASE):
+            url = match.encode("utf-8").decode("unicode_escape", errors="ignore")
+            url = html.unescape(url).replace("\\u0026", "&").replace("\\/", "/")
+            if url.startswith("https://") and url not in encontrados:
+                encontrados.append(url)
+
+    return encontrados
+
+
+def validar_conteudo_excel(conteudo, origem=""):
+    if parece_excel(conteudo):
+        return
+
+    inicio = conteudo[:300].decode("utf-8", errors="ignore") if conteudo else ""
+    raise RuntimeError(
+        "O link não devolveu um ficheiro Excel (.xlsx) válido. "
+        "Confirmar que o link é público e que permite download direto. "
+        f"Origem tentada: {origem}. "
+        f"Início da resposta recebida: {inicio}"
+    )
+
+
+def pedir_url(url):
+    return requests.get(
+        url,
+        headers=HTTP_HEADERS,
+        allow_redirects=True,
+        timeout=60,
+    )
+
+
+def descarregar_excel_por_link_publico():
+    if not SHAREPOINT_EXCEL_URL:
+        raise RuntimeError(
+            "SHAREPOINT_EXCEL_URL não está definida no Render. "
+            "Esta aplicação usa apenas link público e não usa ficheiro local."
+        )
+
+    erros = []
+    visitados = set()
+    fila = candidatos_para_download(SHAREPOINT_EXCEL_URL)
+
+    while fila:
+        url = fila.pop(0)
+        if url in visitados:
+            continue
+        visitados.add(url)
+
+        try:
+            resposta = pedir_url(url)
+        except Exception as exc:
+            erros.append(f"{url} -> {type(exc).__name__}: {exc}")
+            continue
+
+        content_type = resposta.headers.get("Content-Type", "")
+        final_url = resposta.url
+
+        if resposta.ok and parece_excel(resposta.content):
+            return resposta.content
+
+        if resposta.ok and "text/html" in content_type.lower():
+            for novo_url in extrair_urls_download_de_html(resposta.content):
+                if novo_url not in visitados and novo_url not in fila:
+                    fila.append(novo_url)
+
+        inicio = resposta.content[:120].decode("utf-8", errors="ignore") if resposta.content else ""
+        erros.append(
+            f"{url} -> status {resposta.status_code}, content-type {content_type}, "
+            f"final {final_url}, inicio {inicio}"
+        )
+
+    detalhe = " | ".join(erros[-4:])
+    raise RuntimeError(
+        "Não foi possível descarregar um Excel válido através do link público. "
+        "Se abrir no browser mas falhar aqui, provavelmente é apenas preview/login e não download real. "
+        f"Detalhes: {detalhe}"
+    )
+
+
+def obter_excel_bytes():
+    agora = time.time()
+
+    if _excel_cache["content"] is not None and (agora - _excel_cache["created_at"] < SHAREPOINT_CACHE_SECONDS):
+        return _excel_cache["content"]
+
+    conteudo = descarregar_excel_por_link_publico()
+    validar_conteudo_excel(conteudo, SHAREPOINT_EXCEL_URL)
+
+    _excel_cache["content"] = conteudo
+    _excel_cache["created_at"] = agora
+    return conteudo
 
 def limpar_valor_excel(valor):
     """Converte valores vindos do Excel para formatos simples usados pelos templates."""
@@ -158,7 +319,10 @@ def obter_excel_bytes():
 def ler_excel(nome_folha):
     conteudo_excel = obter_excel_bytes()
     tabela = pd.read_excel(BytesIO(conteudo_excel), sheet_name=nome_folha, engine="openpyxl")
-    tabela = tabela.applymap(limpar_valor_excel)
+    try:
+        tabela = tabela.map(limpar_valor_excel)
+    except AttributeError:
+        tabela = tabela.applymap(limpar_valor_excel)
     return tabela.to_dict(orient="records")
 
 
