@@ -1,4 +1,4 @@
-# APP_PY_LINK_FIXO_NO_CODIGO_20260617
+# APP_PY_SEM_CACHE_RAPIDO_VISIVEL_20260617
 from flask import Flask, render_template, request, redirect, url_for, session
 import base64
 import html
@@ -27,13 +27,8 @@ CHAVES_PRIVADAS = {
 # LINK_PUBLICO_FIXO_NO_CODIGO_20260617
 # A aplicação usa APENAS este link público SharePoint/OneDrive.
 # Não usa Excel local, não usa CSV local e não precisa de variável no Render.
-SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2"
-SHAREPOINT_CACHE_SECONDS = 0
-
-_excel_cache = {
-    "created_at": 0,
-    "content": None
-}
+SHAREPOINT_EXCEL_URL = "https://ismaipt-my.sharepoint.com/:x:/g/personal/a044946_ipmaia_pt/IQDT1uQzM02ZQ41TmO4wCEVGAe_meeS_kvcf7poy6cdR0m0?e=d4oDb2&download=1"
+SHAREPOINT_CACHE_SECONDS = 0  # sem cache: cada refresh volta a descarregar o Excel
 
 HTTP_HEADERS = {
     "User-Agent": (
@@ -45,7 +40,60 @@ HTTP_HEADERS = {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,"
         "application/octet-stream,text/html,*/*"
     ),
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
 }
+
+
+@app.after_request
+def impedir_cache_browser(response):
+    # Impede o browser/CDN de mostrar HTML antigo quando fazes refresh.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+@app.errorhandler(Exception)
+def mostrar_erro_visivel(erro):
+    # Em vez de página preta ou erro genérico, mostra claramente o que falhou.
+    mensagem = str(erro)
+    return f"""
+    <!doctype html>
+    <html lang="pt">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Erro ao carregar dados</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; background:#f4f6f8; color:#111827; padding:40px; }}
+            .box {{ max-width:900px; margin:auto; background:white; border-radius:12px; padding:24px; box-shadow:0 2px 12px rgba(0,0,0,.12); }}
+            pre {{ white-space:pre-wrap; background:#f3f4f6; padding:16px; border-radius:8px; overflow:auto; }}
+            a {{ color:#2563eb; }}
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h1>Erro ao carregar o Excel</h1>
+            <p>A aplicação está online, mas não conseguiu obter/ler o ficheiro Excel do SharePoint.</p>
+            <pre>{html.escape(mensagem)}</pre>
+            <p>Confirma que o Excel está guardado no SharePoint e que o link permite download público.</p>
+            <p><a href="/">Tentar novamente</a></p>
+        </div>
+    </body>
+    </html>
+    """, 500
+
+
+@app.route("/debug-sharepoint")
+def debug_sharepoint():
+    # Página simples para testar se o servidor está a receber mesmo um .xlsx.
+    try:
+        conteudo = descarregar_excel_por_link_publico()
+        primeiros_bytes = conteudo[:4].hex(" ").upper()
+        return f"OK - Excel recebido. Primeiros bytes: {primeiros_bytes}. Tamanho: {len(conteudo)} bytes."
+    except Exception as erro:
+        return f"ERRO SHAREPOINT: {html.escape(str(erro))}", 500
 
 
 def limpar_valor_excel(valor):
@@ -66,6 +114,14 @@ def acrescentar_parametro_download(url):
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
+def acrescentar_cache_buster(url):
+    """Evita que o SharePoint/OneDrive devolva uma versão antiga do ficheiro."""
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["_cb"] = str(int(time.time() * 1000))
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 def criar_share_id(share_url):
     """Cria o shareId usado por endpoints públicos OneDrive/SharePoint."""
     encoded = base64.urlsafe_b64encode(share_url.encode("utf-8")).decode("utf-8")
@@ -74,22 +130,26 @@ def criar_share_id(share_url):
 
 
 def candidatos_para_download(url):
-    """Gera várias tentativas para transformar o link público em download real do Excel."""
+    """Gera poucas tentativas rápidas para não deixar a página preta/a carregar muito tempo."""
     urls = []
 
     def add(u):
         if u and u not in urls:
             urls.append(u)
 
+    # Tenta primeiro o link já em modo download.
     add(url)
     add(acrescentar_parametro_download(url))
 
+    # Tenta com cache-buster para forçar versão nova no refresh.
+    add(acrescentar_cache_buster(url))
+    add(acrescentar_cache_buster(acrescentar_parametro_download(url)))
+
+    # Endpoint público OneDrive/SharePoint. Evitamos chamadas demais para não bloquear a página.
     share_id = criar_share_id(url)
     add(f"https://api.onedrive.com/v1.0/shares/{share_id}/root/content")
-    add(f"https://graph.microsoft.com/v1.0/shares/{share_id}/driveItem/content")
 
     return urls
-
 
 def parece_excel(conteudo):
     # Ficheiros .xlsx são ZIP e começam por PK.
@@ -139,7 +199,7 @@ def pedir_url(url):
         url,
         headers=HTTP_HEADERS,
         allow_redirects=True,
-        timeout=60,
+        timeout=12,
     )
 
 
@@ -186,16 +246,9 @@ def descarregar_excel_por_link_publico():
 
 
 def obter_excel_bytes():
-    agora = time.time()
-
-    if _excel_cache["content"] is not None and (agora - _excel_cache["created_at"] < SHAREPOINT_CACHE_SECONDS):
-        return _excel_cache["content"]
-
+    # Sem cache no servidor: cada refresh da página volta a buscar o Excel ao SharePoint.
     conteudo = descarregar_excel_por_link_publico()
     validar_conteudo_excel(conteudo, SHAREPOINT_EXCEL_URL)
-
-    _excel_cache["content"] = conteudo
-    _excel_cache["created_at"] = agora
     return conteudo
 
 
